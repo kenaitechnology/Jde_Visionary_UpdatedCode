@@ -1,0 +1,163 @@
+CREATE TABLE `alerts` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`type` enum('stockout_warning','delivery_delay','supplier_issue','quality_alert','temperature_alert','general') NOT NULL,
+	`severity` enum('info','warning','critical') NOT NULL DEFAULT 'warning',
+	`title` varchar(255) NOT NULL,
+	`message` text NOT NULL,
+	`relatedEntityType` varchar(50),
+	`relatedEntityId` int,
+	`isRead` boolean DEFAULT false,
+	`isResolved` boolean DEFAULT false,
+	`resolvedAt` timestamp,
+	`resolvedBy` int,
+	`assignedTo` int,
+	`actionTaken` text,
+	`emailSent` boolean DEFAULT false,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `alerts_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `demand_history` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`itemId` int NOT NULL,
+	`date` timestamp NOT NULL,
+	`quantity` int NOT NULL,
+	`source` enum('sales','forecast','adjustment') DEFAULT 'sales',
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `demand_history_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `inventory_items` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`itemCode` varchar(32) NOT NULL,
+	`description` varchar(255) NOT NULL,
+	`category` varchar(100),
+	`unitOfMeasure` varchar(20) DEFAULT 'EA',
+	`quantityOnHand` int DEFAULT 0,
+	`quantityReserved` int DEFAULT 0,
+	`quantityAvailable` int DEFAULT 0,
+	`reorderPoint` int DEFAULT 100,
+	`safetyStock` int DEFAULT 50,
+	`averageDailyDemand` decimal(10,2) DEFAULT '10.00',
+	`daysOfSupply` int DEFAULT 30,
+	`stockoutRisk` enum('low','medium','high','critical') DEFAULT 'low',
+	`predictedStockoutDate` timestamp,
+	`unitCost` decimal(12,2) DEFAULT '0.00',
+	`warehouseLocation` varchar(50),
+	`primarySupplierId` int,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `inventory_items_id` PRIMARY KEY(`id`),
+	CONSTRAINT `inventory_items_itemCode_unique` UNIQUE(`itemCode`)
+);
+--> statement-breakpoint
+CREATE TABLE `purchase_orders` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`poNumber` varchar(32) NOT NULL,
+	`supplierId` int NOT NULL,
+	`itemId` int NOT NULL,
+	`quantity` int NOT NULL,
+	`unitPrice` decimal(12,2) NOT NULL,
+	`totalAmount` decimal(14,2) NOT NULL,
+	`orderDate` timestamp NOT NULL,
+	`requestedDeliveryDate` timestamp NOT NULL,
+	`promisedDeliveryDate` timestamp,
+	`actualDeliveryDate` timestamp,
+	`predictedDeliveryDate` timestamp,
+	`delayProbability` decimal(5,2) DEFAULT '0.00',
+	`status` enum('draft','pending','approved','shipped','in_transit','delivered','cancelled') NOT NULL DEFAULT 'pending',
+	`riskLevel` enum('green','yellow','red') DEFAULT 'green',
+	`priority` enum('low','medium','high','critical') DEFAULT 'medium',
+	`notes` text,
+	`createdBy` int,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `purchase_orders_id` PRIMARY KEY(`id`),
+	CONSTRAINT `purchase_orders_poNumber_unique` UNIQUE(`poNumber`)
+);
+--> statement-breakpoint
+CREATE TABLE `remediation_actions` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`actionType` enum('reroute_order','email_supplier','update_delivery_date','switch_supplier','expedite_shipment','other') NOT NULL,
+	`relatedEntityType` varchar(50) NOT NULL,
+	`relatedEntityId` int NOT NULL,
+	`description` text,
+	`status` enum('pending','in_progress','completed','failed') NOT NULL DEFAULT 'pending',
+	`result` text,
+	`triggeredBy` int,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`completedAt` timestamp,
+	CONSTRAINT `remediation_actions_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `sales_orders` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`soNumber` varchar(32) NOT NULL,
+	`customerName` varchar(255) NOT NULL,
+	`customerCode` varchar(32),
+	`itemId` int NOT NULL,
+	`quantity` int NOT NULL,
+	`unitPrice` decimal(12,2) NOT NULL,
+	`totalAmount` decimal(14,2) NOT NULL,
+	`orderDate` timestamp NOT NULL,
+	`requestedShipDate` timestamp NOT NULL,
+	`promisedShipDate` timestamp,
+	`actualShipDate` timestamp,
+	`status` enum('draft','pending','confirmed','processing','shipped','delivered','cancelled') NOT NULL DEFAULT 'pending',
+	`priority` enum('low','medium','high','critical') DEFAULT 'medium',
+	`fulfillmentRisk` enum('green','yellow','red') DEFAULT 'green',
+	`notes` text,
+	`createdBy` int,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `sales_orders_id` PRIMARY KEY(`id`),
+	CONSTRAINT `sales_orders_soNumber_unique` UNIQUE(`soNumber`)
+);
+--> statement-breakpoint
+CREATE TABLE `shipments` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`shipmentNumber` varchar(32) NOT NULL,
+	`purchaseOrderId` int,
+	`salesOrderId` int,
+	`carrier` varchar(100),
+	`trackingNumber` varchar(100),
+	`origin` varchar(255),
+	`destination` varchar(255),
+	`estimatedDeparture` timestamp,
+	`actualDeparture` timestamp,
+	`estimatedArrival` timestamp,
+	`predictedArrival` timestamp,
+	`actualArrival` timestamp,
+	`status` enum('pending','picked_up','in_transit','out_for_delivery','delivered','delayed','exception') NOT NULL DEFAULT 'pending',
+	`riskLevel` enum('green','yellow','red') DEFAULT 'green',
+	`delayReason` text,
+	`temperature` decimal(5,2),
+	`temperatureAlert` boolean DEFAULT false,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `shipments_id` PRIMARY KEY(`id`),
+	CONSTRAINT `shipments_shipmentNumber_unique` UNIQUE(`shipmentNumber`)
+);
+--> statement-breakpoint
+CREATE TABLE `suppliers` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`supplierCode` varchar(32) NOT NULL,
+	`name` varchar(255) NOT NULL,
+	`contactName` varchar(255),
+	`email` varchar(320),
+	`phone` varchar(50),
+	`address` text,
+	`city` varchar(100),
+	`country` varchar(100),
+	`leadTimeDays` int DEFAULT 7,
+	`reliabilityScore` decimal(5,2) DEFAULT '85.00',
+	`onTimeDeliveryRate` decimal(5,2) DEFAULT '90.00',
+	`qualityScore` decimal(5,2) DEFAULT '88.00',
+	`status` enum('active','inactive','suspended') NOT NULL DEFAULT 'active',
+	`category` varchar(100),
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `suppliers_id` PRIMARY KEY(`id`),
+	CONSTRAINT `suppliers_supplierCode_unique` UNIQUE(`supplierCode`)
+);
