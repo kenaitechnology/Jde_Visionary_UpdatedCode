@@ -60,13 +60,13 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function ScoreBar({ score, label }: { score: number; label: string }) {
+function ScoreBar({ score, label, tooltip }: { score: number; label: string; tooltip?: string }) {
   let color = "bg-[oklch(0.65_0.2_145)]";
   if (score < 80) color = "bg-[oklch(0.80_0.18_85)]";
   if (score < 70) color = "bg-[oklch(0.55_0.25_27)]";
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 group relative">
       <div className="flex justify-between text-sm">
         <span className="text-muted-foreground">{label}</span>
         <span className="font-medium">{score.toFixed(1)}%</span>
@@ -74,6 +74,14 @@ function ScoreBar({ score, label }: { score: number; label: string }) {
       <div className="h-2 bg-muted rounded overflow-hidden">
         <div className={`h-full ${color}`} style={{ width: `${score}%` }} />
       </div>
+      {tooltip && (
+        <>
+          <div className="absolute -top-10 left-0 right-0 bg-background border rounded-md shadow-lg p-2 text-xs opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 whitespace-pre-wrap max-w-xs">
+            {tooltip}
+          </div>
+          <div className="absolute top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-background rotate-45 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-40" />
+        </>
+      )}
     </div>
   );
 }
@@ -103,9 +111,21 @@ function SupplierCard({ supplier, onFindAlternatives }: { supplier: any; onFindA
           </div>
 
           <div className="space-y-3">
-            <ScoreBar score={Number(supplier.reliabilityScore)} label="Reliability" />
-            <ScoreBar score={Number(supplier.onTimeDeliveryRate)} label="On-Time Delivery" />
-            <ScoreBar score={Number(supplier.qualityScore)} label="Quality" />
+<ScoreBar 
+  score={Number(supplier.reliabilityScore)} 
+  label="Reliability" 
+  tooltip="On-time receipts: Receipt Date ≤ Requested Date (F4311/F43121)" 
+/>
+<ScoreBar 
+  score={Number(supplier.onTimeDeliveryRate)} 
+  label="On-Time Delivery" 
+  tooltip="Same as reliability: % receipts on/early (Receipt ≤ Requested)" 
+/>
+<ScoreBar 
+  score={Number(supplier.qualityScore)} 
+  label="Quality" 
+  tooltip="(Received Qty - Open Qty) / Ordered Qty × 100 (F4311 PDUORG/PDUOPN)" 
+/>
           </div>
 
           <div className="flex items-center gap-2 pt-2">
@@ -124,6 +144,22 @@ function SupplierCard({ supplier, onFindAlternatives }: { supplier: any; onFindA
   );
 }
 
+// Transform JDE supplier data to UI format
+function transformJDESupplier(jdeSupplier: any) {
+  return {
+    id: jdeSupplier.id,
+    supplierCode: jdeSupplier.id, // Use ID as code
+    name: jdeSupplier.name,
+    status: jdeSupplier.type === 'V' ? 'active' : 'inactive', // V = Vendor = Active
+    country: jdeSupplier.country || 'N/A',
+    leadTimeDays: jdeSupplier.leadDays || 0,
+    reliabilityScore: jdeSupplier.reliabilityScore || 0, // From JDE F4311 + F43121
+    onTimeDeliveryRate: jdeSupplier.reliabilityScore || 0, // Same as reliability (Receipt Date ≤ Requested Date)
+    qualityScore: jdeSupplier.qualityScore || 0, // From JDE F4311: (PDUORG - PDUOPN) / PDUORG × 100
+    category: 'Vendor', // JDE type V means Vendor
+  };
+}
+
 export default function Suppliers() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -132,10 +168,11 @@ export default function Suppliers() {
   const [showAlternativesDialog, setShowAlternativesDialog] = useState(false);
   const [alternatives, setAlternatives] = useState<any>(null);
 
-  const { data: suppliers, isLoading, refetch } = trpc.supplier.list.useQuery({
-    status: statusFilter !== "all" ? statusFilter : undefined,
-    category: categoryFilter !== "all" ? categoryFilter : undefined,
-  });
+  // Fetch suppliers from JDE database (F0101 table)
+  const { data: jdeSuppliers, isLoading, refetch } = trpc.supplier.listJDE.useQuery();
+
+  // Transform JDE data to UI format
+  const suppliers = jdeSuppliers?.map(transformJDESupplier) || [];
 
   const recommendSuppliers = trpc.ai.recommendSuppliers.useMutation({
     onSuccess: (data) => {
@@ -153,7 +190,7 @@ export default function Suppliers() {
     const query = searchQuery.toLowerCase();
     return (
       supplier.name.toLowerCase().includes(query) ||
-      supplier.supplierCode.toLowerCase().includes(query) ||
+      supplier.supplierCode?.toLowerCase().includes(query) ||
       supplier.country?.toLowerCase().includes(query)
     );
   });
@@ -164,13 +201,26 @@ export default function Suppliers() {
     setAlternatives(null);
     recommendSuppliers.mutate({
       itemCategory: supplier.category,
-      currentSupplierId: supplier.id,
+      currentSupplierId: Number(supplier.id) || 0,
       urgency: "medium",
     });
   };
 
-  const avgReliability = (suppliers?.reduce((acc: number, s: any) => acc + Number(s.reliabilityScore), 0) || 0) / (suppliers?.length || 1);
-  const avgOnTime = (suppliers?.reduce((acc: number, s: any) => acc + Number(s.onTimeDeliveryRate), 0) || 0) / (suppliers?.length || 1);
+  // Calculate average reliability and on-time delivery from JDE data
+  const avgReliability = suppliers?.length 
+    ? suppliers.reduce((sum: number, s: any) => sum + (s.reliabilityScore || 0), 0) / suppliers.filter((s: any) => s.reliabilityScore > 0).length || 0
+    : 0;
+  
+  // On-Time is the same as reliability (percentage where Receipt Date ≤ Requested Date)
+  const avgOnTime = avgReliability;
+  
+  // Calculate average quality from JDE data
+  const avgQuality = suppliers?.length
+    ? suppliers.reduce((sum: number, s: any) => sum + (s.qualityScore || 0), 0) / suppliers.filter((s: any) => s.qualityScore > 0).length || 0
+    : 0;
+  
+  // JDE vendors are all active (type V = Vendor)
+  const activeCount = suppliers?.filter((s: any) => s.status === "active").length || 0;
 
   return (
     <DashboardLayout>
@@ -209,9 +259,9 @@ export default function Suppliers() {
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-caption">Active</p>
+                  <p className="text-caption">Active (Vendors)</p>
                   <p className="text-3xl font-bold text-[oklch(0.65_0.2_145)]">
-                    {suppliers?.filter((s: any) => s.status === "active").length || 0}
+                    {activeCount}
                   </p>
                 </div>
                 <CheckCircle2 className="h-8 w-8 text-[oklch(0.65_0.2_145)]" />
@@ -223,7 +273,7 @@ export default function Suppliers() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-caption">Avg Reliability</p>
-                  <p className="text-3xl font-bold">{avgReliability?.toFixed(1)}%</p>
+                  <p className="text-3xl font-bold">{avgReliability > 0 ? `${avgReliability.toFixed(1)}%` : 'N/A'}</p>
                 </div>
                 <Star className="h-8 w-8 text-muted-foreground" />
               </div>
@@ -234,7 +284,7 @@ export default function Suppliers() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-caption">Avg On-Time</p>
-                  <p className="text-3xl font-bold">{avgOnTime?.toFixed(1)}%</p>
+                  <p className="text-3xl font-bold">{avgOnTime > 0 ? `${avgOnTime.toFixed(1)}%` : 'N/A'}</p>
                 </div>
                 <TrendingUp className="h-8 w-8 text-muted-foreground" />
               </div>

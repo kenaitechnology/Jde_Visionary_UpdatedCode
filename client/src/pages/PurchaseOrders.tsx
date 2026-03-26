@@ -59,18 +59,35 @@ function RiskBadge({ level }: { level: string }) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const config: Record<string, { variant: "default" | "secondary" | "outline" | "destructive" }> = {
-    pending: { variant: "secondary" },
-    approved: { variant: "default" },
-    shipped: { variant: "default" },
-    in_transit: { variant: "default" },
-    delivered: { variant: "secondary" },
-    cancelled: { variant: "destructive" },
+  const config: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
+    pending: { label: "Pending", variant: "outline" },
+    on_hold: { label: "On Hold", variant: "destructive" },
+    in_progress: { label: "In Progress", variant: "default" },
+    completed: { label: "Completed", variant: "secondary" },
+    cancelled: { label: "Cancelled", variant: "destructive" },
+    // JDE Status Codes
+    "100": { label: "Pending", variant: "outline" },
+    "110": { label: "Pending", variant: "outline" },
+    "120": { label: "Pending", variant: "outline" },
+    "130": { label: "Pending", variant: "outline" },
+    "215": { label: "Pending", variant: "outline" },
+    "160": { label: "On Hold", variant: "destructive" },
+    "180": { label: "In Progress", variant: "default" },
+    "220": { label: "In Progress", variant: "default" },
+    "230": { label: "In Progress", variant: "default" },
+    "240": { label: "In Progress", variant: "default" },
+    "250": { label: "In Progress", variant: "default" },
+    "280": { label: "In Progress", variant: "default" },
+    "380": { label: "In Progress", variant: "default" },
+    "400": { label: "Completed", variant: "secondary" },
+    "999": { label: "Cancelled", variant: "destructive" },
   };
 
+  const statusConfig = config[status] || { label: status, variant: "secondary" as const };
+
   return (
-    <Badge variant={config[status]?.variant || "secondary"} className="capitalize">
-      {status.replace(/_/g, " ")}
+    <Badge variant={statusConfig.variant} className="capitalize">
+      {statusConfig.label}
     </Badge>
   );
 }
@@ -196,10 +213,10 @@ export default function PurchaseOrders() {
                 <SelectContent>
                   <SelectItem value="all">All Statuses</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="shipped">Shipped</SelectItem>
-                  <SelectItem value="in_transit">In Transit</SelectItem>
-                  <SelectItem value="delivered">Delivered</SelectItem>
+                  <SelectItem value="on_hold">On Hold</SelectItem>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>

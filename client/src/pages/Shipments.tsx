@@ -61,6 +61,15 @@ function StatusBadge({ status }: { status: string }) {
     "Delivered": { variant: "secondary" },
     "Completed": { variant: "secondary" },
     "Cancelled": { variant: "destructive" },
+    // JDE Status Codes
+    "420": { variant: "outline" },
+    "430": { variant: "secondary" },
+    "440": { variant: "default" },
+    "450": { variant: "default" },
+    "460": { variant: "default" },
+    "470": { variant: "secondary" },
+    "480": { variant: "secondary" },
+    "999": { variant: "destructive" },
   };
 
   return (

@@ -221,6 +221,41 @@
     color: oklch(0.45 0.25 27);
   }
   
+  /* Status badge colors - matching risk column colors */
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold uppercase tracking-wider;
+  }
+  
+  /* Pending - Blue */
+  .status-badge-pending {
+    background-color: rgba(59, 130, 246, 0.15);
+    color: #2563eb;
+  }
+  
+  /* On Hold - Orange */
+  .status-badge-on-hold {
+    background-color: rgba(251, 146, 60, 0.2);
+    color: #ea580c;
+  }
+  
+  /* In Progress - Yellow (same as risk-badge-yellow) */
+  .status-badge-in-progress {
+    background-color: rgba(234, 179, 8, 0.2);
+    color: #ca8a04;
+  }
+  
+  /* Completed - Green (same as risk-badge-green) */
+  .status-badge-completed {
+    background-color: rgba(34, 197, 94, 0.15);
+    color: #16a34a;
+  }
+  
+  /* Cancelled - Red (same as risk-badge-red) */
+  .status-badge-cancelled {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: #dc2626;
+  }
+  
   /* Swiss-style divider lines */
   .swiss-divider {
     @apply h-px bg-foreground/20;

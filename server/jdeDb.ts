@@ -29,29 +29,115 @@ function getSqlConfig(): sql.config {
     password: config.MSSQL_PASSWORD,
     database: config.MSSQL_DATABASE,
     options: {
-      encrypt: false,
-      trustServerCertificate: true,
+      encrypt: true,
+      trustServerCertificate: false,
       enableArithAbort: true,
       connectionTimeout: 30000,
       requestTimeout: 30000,
     },
     pool: {
       max: 5,
-      min: 0,
+      min: 1,
       idleTimeoutMillis: 60000,
     },
   };
 }
 
+// ============ SINGLETON CONNECTION POOL ============
+let poolPromise: Promise<sql.ConnectionPool> | null = null;
+let poolInstance: sql.ConnectionPool | null = null;
+
+/**
+ * Get or create the singleton connection pool
+ * This ensures we reuse connections instead of creating new ones for each query
+ */
+async function getPool(): Promise<sql.ConnectionPool | null> {
+  const config = getJDEConfig();
+  
+  if (!config.MSSQL_USER || !config.MSSQL_PASSWORD || !config.MSSQL_HOST) {
+    console.warn("[JDE Database] MSSQL credentials not configured");
+    return null;
+  }
+
+  // If we already have a connected pool, check if it's still valid
+  if (poolInstance) {
+    try {
+      // Check if the pool is still connected
+      if ((poolInstance as any).connected) {
+        return poolInstance;
+      }
+      // Pool exists but disconnected, clear it
+      poolInstance = null;
+      poolPromise = null;
+    } catch (e) {
+      // Pool might be in a bad state, reset
+      poolInstance = null;
+      poolPromise = null;
+    }
+  }
+
+  // If there's an existing promise, return it (avoid creating multiple connections)
+  if (poolPromise) {
+    try {
+      poolInstance = await poolPromise;
+      return poolInstance;
+    } catch (e) {
+      // Promise failed, reset and try again
+      poolPromise = null;
+      poolInstance = null;
+    }
+  }
+
+  // Create new connection pool promise
+  poolPromise = (async () => {
+    try {
+      console.log("[JDE Database] Creating new connection pool...");
+      const pool = await sql.connect(getSqlConfig());
+      
+      poolInstance = pool;
+      console.log("[JDE Database] Connection pool established successfully");
+      return pool;
+    } catch (error) {
+      console.error("[JDE Database] Failed to create connection pool:", error);
+      poolPromise = null;
+      poolInstance = null;
+      throw error;
+    }
+  })();
+
+  return poolPromise;
+}
+
+/**
+ * Close the connection pool (for graceful shutdown)
+ */
+export async function closeJDEDb(): Promise<void> {
+  if (poolInstance) {
+    try {
+      await poolInstance.close();
+      console.log("[JDE Database] Connection pool closed");
+    } catch (error) {
+      console.warn("[JDE Database] Error closing pool:", error);
+    }
+    poolInstance = null;
+    poolPromise = null;
+  }
+}
+
+/**
+ * Check if the database connection is available
+ */
+export async function isJDEConnected(): Promise<boolean> {
+  try {
+    const pool = await getPool();
+    return pool !== null && (pool as any).connected;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Convert JDE Julian date (CYYDDD) to YYYY-MM-DD format
- * C = Century (0 = 1900s, 1 = 2000s)
- * YY = Year within the century
- * DDD = Day of the year (001–365)
- * 
- * Example: 124065 -> C=1, YY=24, DDD=065
- * Year = (1 × 100) + 1900 + 24 = 2024
- * Final Date = 2024-01-01 + 64 days = 2024-03-05
  */
 function convertJDEJulianDate(julianDate: string | number | null | undefined): string {
   if (!julianDate) return "";
@@ -60,12 +146,10 @@ function convertJDEJulianDate(julianDate: string | number | null | undefined): s
   if (!dateStr || dateStr === "0") return "";
   
   try {
-    // If already looks like YYYY-MM-DD, return as-is
     if (dateStr.includes("-") && dateStr.length === 10) {
       return dateStr;
     }
     
-    // Handle CYYDDD format (6 digits)
     if (dateStr.length === 6) {
       const c = parseInt(dateStr.charAt(0));
       const yy = parseInt(dateStr.substring(1, 3));
@@ -93,7 +177,6 @@ function convertJDEJulianDate(julianDate: string | number | null | undefined): s
       return `${formattedYear}-${formattedMonth}-${formattedDay}`;
     }
     
-    // Legacy handling for other formats (CYYMMDD, YYYYMMDD, etc.)
     let year: number, month: number, day: number;
     
     if (dateStr.length === 7) {
@@ -123,14 +206,6 @@ function convertJDEJulianDate(julianDate: string | number | null | undefined): s
       return dateStr;
     }
     
-    const checkYear = dateObj.getFullYear();
-    const checkMonth = dateObj.getMonth();
-    const checkDay = dateObj.getDate();
-    if (checkYear !== year || checkMonth !== month || checkDay !== day) {
-      console.warn("[JDE Database] Date validation failed:", dateStr, "->", checkYear, checkMonth, checkDay);
-      return dateStr;
-    }
-    
     const formattedMonth = String(month + 1).padStart(2, '0');
     const formattedDay = String(day).padStart(2, '0');
     return `${year}-${formattedMonth}-${formattedDay}`;
@@ -144,28 +219,12 @@ function convertJEDate(julianDate: string | number | null | undefined): string {
   return convertJDEJulianDate(julianDate);
 }
 
-export async function getJDEDb(): Promise<sql.ConnectionPool | null> {
-  const config = getJDEConfig();
-  
-  if (!config.MSSQL_USER || !config.MSSQL_PASSWORD || !config.MSSQL_HOST) {
-    console.warn("[JDE Database] MSSQL credentials not configured");
-    return null;
-  }
-
-  try {
-    const pool = await sql.connect(getSqlConfig());
-    return pool;
-  } catch (error) {
-    console.error("[JDE Database] Failed to connect:", error);
-    return null;
-  }
-}
-
+/**
+ * Execute a query using the singleton connection pool
+ */
 async function executeQuery<T>(query: string): Promise<T[]> {
-  let pool: sql.ConnectionPool | null = null;
-  
   try {
-    pool = await getJDEDb();
+    const pool = await getPool();
     if (!pool) {
       console.warn("[JDE Database] Cannot execute query: database not available");
       return [];
@@ -175,17 +234,10 @@ async function executeQuery<T>(query: string): Promise<T[]> {
     const result = await request.query(query);
     return result.recordset as T[];
   } catch (error) {
-    console.error("[JDE Database] Query error:\n", query, "\n", error);
+    console.error("[JDE Database] Query error:", error);
     return [];
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch (closeError) {
-        console.warn("[JDE Database] Error closing pool:", closeError);
-      }
-    }
   }
+  // Note: We don't close the pool here because we're using a singleton connection pool
 }
 
 export interface JDEPurchaseOrder {
@@ -222,9 +274,9 @@ export async function getJDEPurchaseOrders(): Promise<JDEPurchaseOrder[]> {
         ELSE ''
       END AS requestedDeliveryDate,
       RTRIM(ISNULL(F4311.PDNXTR, '')) AS status
-    FROM CRPDTA.F4301 F4301
-    INNER JOIN CRPDTA.F4311 F4311 ON F4301.PHDOCO = F4311.PDDOCO AND F4301.PHDCTO = F4311.PDDCTO
-    LEFT JOIN CRPDTA.F0101 F0101 ON F4311.PDAN8 = F0101.ABAN8
+    FROM dbo.F4301 F4301
+    INNER JOIN dbo.F4311 F4311 ON F4301.PHDOCO = F4311.PDDOCO AND F4301.PHDCTO = F4311.PDDCTO
+    LEFT JOIN dbo.F0101 F0101 ON F4311.PDAN8 = F0101.ABAN8
     ORDER BY F4301.PHDOCO DESC
   `;
 
@@ -253,24 +305,30 @@ export async function getJDEPurchaseOrders(): Promise<JDEPurchaseOrder[]> {
 
 function mapJDEStatus(nxtStatus: string): string {
   const statusMap: Record<string, string> = {
-    "420": "Pending",
-    "430": "Approved",
-    "440": "Sent to Supplier",
-    "450": "Partial Receipt",
-    "460": "Receipt Complete",
-    "470": "Closed",
-    "480": "Cancelled",
+    "100": "Pending",
+    "110": "Pending",
+    "120": "Pending",
+    "130": "Pending",
+    "215": "Pending",
+    "160": "On Hold",
+    "180": "In Progress",
+    "220": "In Progress",
+    "230": "In Progress",
+    "240": "In Progress",
+    "250": "In Progress",
+    "280": "In Progress",
+    "380": "In Progress",
+    "400": "Completed",
     "999": "Cancelled",
     "": "Pending",
   };
   
   const trimmed = nxtStatus?.trim() || "";
-  return statusMap[trimmed] || trimmed || "Unknown";
+  return statusMap[trimmed] || "Pending";
 }
 
 function calculateJDEPORisk(status: string, deliveryDate: string): { riskLevel: string; delayProbability: number } {
-  // If already delivered or closed, low risk
-  if (status === "460" || status === "470" || status === "480" || status === "Closed" || status === "Receipt Complete" || status === "Closed" || status === "Cancelled") {
+  if (status === "400" || status === "Completed") {
     return { riskLevel: "green", delayProbability: 5 };
   }
   
@@ -278,14 +336,16 @@ function calculateJDEPORisk(status: string, deliveryDate: string): { riskLevel: 
     return { riskLevel: "green", delayProbability: 5 };
   }
   
-  // Calculate based on delivery date
+  if (status === "160" || status === "On Hold") {
+    return { riskLevel: "yellow", delayProbability: 40 };
+  }
+  
   if (deliveryDate) {
     try {
       let year: number, month: number, day: number;
       const dateStr = deliveryDate.toString();
       
       if (dateStr.length === 6) {
-        // CYYDDD format
         const c = parseInt(dateStr.charAt(0));
         const yy = parseInt(dateStr.substring(1, 3));
         const ddd = parseInt(dateStr.substring(3, 6));
@@ -319,7 +379,6 @@ function calculateJDEPORisk(status: string, deliveryDate: string): { riskLevel: 
       const daysUntilDelivery = Math.ceil((deliveryDateObj.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
       
       if (daysUntilDelivery < 0) {
-        // Past due date
         return { riskLevel: "red", delayProbability: 85 };
       } else if (daysUntilDelivery <= 3) {
         return { riskLevel: "red", delayProbability: 75 };
@@ -347,44 +406,36 @@ export async function getJDEPurchaseOrderById(poNumber: string): Promise<JDEPurc
     return null;
   }
 
-  let pool: sql.ConnectionPool | null = null;
-  
+  const query = `
+    SELECT TOP 1
+      RTRIM(CONVERT(VARCHAR, F4301.PHDOCO)) AS poNumber,
+      RTRIM(ISNULL(F0101.ABALPH, 'Unknown Supplier')) AS supplierName,
+      CASE 
+        WHEN F4301.PHTRDJ IS NOT NULL AND F4301.PHTRDJ > 0 THEN 
+          CONVERT(VARCHAR, CAST(F4301.PHTRDJ AS INT))
+        ELSE ''
+      END AS orderDate,
+      CASE 
+        WHEN F4311.PDDRQJ IS NOT NULL AND F4311.PDDRQJ > 0 THEN 
+          CONVERT(VARCHAR, CAST(F4311.PDDRQJ AS INT))
+        ELSE ''
+      END AS requestedDeliveryDate,
+      RTRIM(ISNULL(F4311.PDNXTR, '')) AS status
+    FROM dbo.F4301 F4301
+    INNER JOIN dbo.F4311 F4311 ON F4301.PHDOCO = F4311.PDDOCO AND F4301.PHDCTO = F4311.PDDCTO
+    LEFT JOIN dbo.F0101 F0101 ON F4311.PDAN8 = F0101.ABAN8
+    WHERE RTRIM(CONVERT(VARCHAR, F4301.PHDOCO)) = '${poNumber}'
+    ORDER BY F4301.PHDOCO DESC
+  `;
+
   try {
-    pool = await getJDEDb();
-    if (!pool) {
-      return null;
-    }
-
-    const query = `
-      SELECT TOP 1
-        RTRIM(CONVERT(VARCHAR, F4301.PHDOCO)) AS poNumber,
-        RTRIM(ISNULL(F0101.ABALPH, 'Unknown Supplier')) AS supplierName,
-        CASE 
-          WHEN F4301.PHTRDJ IS NOT NULL AND F4301.PHTRDJ > 0 THEN 
-            CONVERT(VARCHAR, CAST(F4301.PHTRDJ AS INT))
-          ELSE ''
-        END AS orderDate,
-        CASE 
-          WHEN F4311.PDDRQJ IS NOT NULL AND F4311.PDDRQJ > 0 THEN 
-            CONVERT(VARCHAR, CAST(F4311.PDDRQJ AS INT))
-          ELSE ''
-        END AS requestedDeliveryDate,
-        RTRIM(ISNULL(F4311.PDNXTR, '')) AS status
-      FROM CRPDTA.F4301 F4301
-      INNER JOIN CRPDTA.F4311 F4311 ON F4301.PHDOCO = F4311.PDDOCO AND F4301.PHDCTO = F4311.PDDCTO
-      LEFT JOIN CRPDTA.F0101 F0101 ON F4311.PDAN8 = F0101.ABAN8
-      WHERE RTRIM(CONVERT(VARCHAR, F4301.PHDOCO)) = '${poNumber}'
-      ORDER BY F4301.PHDOCO DESC
-    `;
-
-    const request = pool.request();
-    const result = await request.query(query);
+    const rows = await executeQuery<any>(query);
     
-    if (result.recordset.length === 0) {
+    if (rows.length === 0) {
       return null;
     }
 
-    const row = result.recordset[0];
+    const row = rows[0];
     const mappedStatus = mapJDEStatus(row.status);
     const riskData = calculateJDEPORisk(row.status, row.requestedDeliveryDate);
     
@@ -400,14 +451,6 @@ export async function getJDEPurchaseOrderById(poNumber: string): Promise<JDEPurc
   } catch (error) {
     console.error("[JDE Database] Error fetching purchase order:", error);
     return null;
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch (closeError) {
-        console.warn("[JDE Database] Error closing pool:", closeError);
-      }
-    }
   }
 }
 
@@ -452,9 +495,9 @@ export async function getJDESalesOrders(): Promise<JDESalesOrder[]> {
       END AS requestedShipDate,
       RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
       RTRIM(ISNULL(F4211.SDPRIO, '')) AS priority
-    FROM CRPDTA.F4211 F4211
-    INNER JOIN CRPDTA.F4201 F4201 ON F4211.SDDOCO = F4201.SHDOCO AND F4211.SDDCTO = F4201.SHDCTO
-    LEFT JOIN CRPDTA.F0101 F0101 ON F4201.SHAN8 = F0101.ABAN8
+    FROM dbo.F4211 F4211
+    INNER JOIN dbo.F4201 F4201 ON F4211.SDDOCO = F4201.SHDOCO AND F4211.SDDCTO = F4201.SHDCTO
+    LEFT JOIN dbo.F0101 F0101 ON F4201.SHAN8 = F0101.ABAN8
     ORDER BY F4211.SDDOCO DESC
   `;
 
@@ -482,21 +525,29 @@ export async function getJDESalesOrders(): Promise<JDESalesOrder[]> {
 }
 
 function mapJDESOStatus(nxtStatus: string): string {
-  const statusMap: Record<string, string> = {
-    "420": "Pending",
-    "430": "Confirmed",
-    "440": "Processing",
-    "450": "Picked",
-    "460": "Packed",
-    "470": "Shipped",
-    "480": "Delivered",
-    "490": "Closed",
-    "999": "Cancelled",
-    "": "Pending",
-  };
+  const statusCode = parseInt(nxtStatus?.trim() || "0", 10);
   
-  const trimmed = nxtStatus?.trim() || "";
-  return statusMap[trimmed] || trimmed || "Pending";
+  if (statusCode >= 527 && statusCode <= 545) {
+    return "Pending";
+  }
+  
+  if (statusCode >= 550 && statusCode <= 578) {
+    return "In Progress";
+  }
+  
+  if (statusCode >= 580 && statusCode <= 620) {
+    return "Shipped/Billing";
+  }
+  
+  if (statusCode === 999) {
+    return "Completed";
+  }
+  
+  if (!nxtStatus || nxtStatus.trim() === "") {
+    return "Pending";
+  }
+  
+  return nxtStatus.trim();
 }
 
 function mapJDESOPriority(priority: string): string {
@@ -514,11 +565,13 @@ function mapJDESOPriority(priority: string): string {
 }
 
 function calculateJDESORisk(status: string, shipDate: string): string {
-  if (status === "470" || status === "480" || status === "490") {
+  const statusCode = parseInt(status?.trim() || "0", 10);
+  
+  if (statusCode === 999) {
     return "green";
   }
   
-  if (status === "999") {
+  if (statusCode >= 580 && statusCode <= 620) {
     return "green";
   }
   
@@ -527,7 +580,21 @@ function calculateJDESORisk(status: string, shipDate: string): string {
       const dateStr = shipDate.toString();
       let year: number, month: number, day: number;
       
-      if (dateStr.length === 7) {
+      if (dateStr.length === 6) {
+        const c = parseInt(dateStr.charAt(0));
+        const yy = parseInt(dateStr.substring(1, 3));
+        const ddd = parseInt(dateStr.substring(3, 6));
+        year = (c * 100) + 1900 + yy;
+        const dateObj = new Date(year, 0, 1);
+        dateObj.setDate(dateObj.getDate() + (ddd - 1));
+        month = dateObj.getMonth();
+        day = dateObj.getDate();
+      } else if (dateStr.includes("-")) {
+        const parts = dateStr.split("-");
+        year = parseInt(parts[0]);
+        month = parseInt(parts[1]) - 1;
+        day = parseInt(parts[2]);
+      } else if (dateStr.length === 7) {
         const century = parseInt(dateStr.charAt(0));
         year = century === 0 ? 2000 + parseInt(dateStr.substring(1, 3)) : 1900 + parseInt(dateStr.substring(1, 3));
         month = parseInt(dateStr.substring(3, 5)) - 1;
@@ -558,7 +625,7 @@ function calculateJDESORisk(status: string, shipDate: string): string {
     }
   }
   
-  return "green";
+  return "yellow";
 }
 
 export async function getJDESalesOrderById(soNumber: string): Promise<JDESalesOrder | null> {
@@ -569,46 +636,38 @@ export async function getJDESalesOrderById(soNumber: string): Promise<JDESalesOr
     return null;
   }
 
-  let pool: sql.ConnectionPool | null = null;
-  
+  const query = `
+    SELECT TOP 1
+      RTRIM(CONVERT(VARCHAR, F4211.SDDOCO)) AS soNumber,
+      RTRIM(ISNULL(F0101.ABALPH, 'Unknown Customer')) AS customerName,
+      RTRIM(CONVERT(VARCHAR, F4211.SDITM)) AS itemNumber,
+      RTRIM(ISNULL(F4211.SDLITM, '')) AS secondItemNumber,
+      RTRIM(ISNULL(F4211.SDAITM, '')) AS thirdItemNumber,
+      COALESCE(TRY_CAST(F4211.SDUORG AS FLOAT), 0) AS quantity,
+      COALESCE(TRY_CAST(F4211.SDUPRC AS FLOAT), 0) AS unitPrice,
+      (COALESCE(TRY_CAST(F4211.SDUORG AS FLOAT), 0) * COALESCE(TRY_CAST(F4211.SDUPRC AS FLOAT), 0)) AS totalAmount,
+      CASE 
+        WHEN F4211.SDDRQJ IS NOT NULL AND F4211.SDDRQJ > 0 THEN 
+          CONVERT(VARCHAR, CAST(F4211.SDDRQJ AS INT))
+        ELSE ''
+      END AS requestedShipDate,
+      RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
+      RTRIM(ISNULL(F4211.SDPRIO, '')) AS priority
+    FROM dbo.F4211 F4211
+    INNER JOIN dbo.F4201 F4201 ON F4211.SDDOCO = F4201.SHDOCO AND F4211.SDDCTO = F4201.SHDCTO
+    LEFT JOIN dbo.F0101 F0101 ON F4201.SHAN8 = F0101.ABAN8
+    WHERE RTRIM(CONVERT(VARCHAR, F4211.SDDOCO)) = '${soNumber}'
+    ORDER BY F4211.SDDOCO DESC
+  `;
+
   try {
-    pool = await getJDEDb();
-    if (!pool) {
-      return null;
-    }
-
-    const query = `
-      SELECT TOP 1
-        RTRIM(CONVERT(VARCHAR, F4211.SDDOCO)) AS soNumber,
-        RTRIM(ISNULL(F0101.ABALPH, 'Unknown Customer')) AS customerName,
-        RTRIM(CONVERT(VARCHAR, F4211.SDITM)) AS itemNumber,
-        RTRIM(ISNULL(F4211.SDLITM, '')) AS secondItemNumber,
-        RTRIM(ISNULL(F4211.SDAITM, '')) AS thirdItemNumber,
-        COALESCE(TRY_CAST(F4211.SDUORG AS FLOAT), 0) AS quantity,
-        COALESCE(TRY_CAST(F4211.SDUPRC AS FLOAT), 0) AS unitPrice,
-        (COALESCE(TRY_CAST(F4211.SDUORG AS FLOAT), 0) * COALESCE(TRY_CAST(F4211.SDUPRC AS FLOAT), 0)) AS totalAmount,
-        CASE 
-          WHEN F4211.SDDRQJ IS NOT NULL AND F4211.SDDRQJ > 0 THEN 
-            CONVERT(VARCHAR, CAST(F4211.SDDRQJ AS INT))
-          ELSE ''
-        END AS requestedShipDate,
-        RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
-        RTRIM(ISNULL(F4211.SDPRIO, '')) AS priority
-      FROM CRPDTA.F4211 F4211
-      INNER JOIN CRPDTA.F4201 F4201 ON F4211.SDDOCO = F4201.SHDOCO AND F4211.SDDCTO = F4201.SHDCTO
-      LEFT JOIN CRPDTA.F0101 F0101 ON F4201.SHAN8 = F0101.ABAN8
-      WHERE RTRIM(CONVERT(VARCHAR, F4211.SDDOCO)) = '${soNumber}'
-      ORDER BY F4211.SDDOCO DESC
-    `;
-
-    const request = pool.request();
-    const result = await request.query(query);
+    const rows = await executeQuery<any>(query);
     
-    if (result.recordset.length === 0) {
+    if (rows.length === 0) {
       return null;
     }
 
-    const row = result.recordset[0];
+    const row = rows[0];
     return {
       soNumber: row.soNumber || "",
       customerName: row.customerName || "Unknown Customer",
@@ -626,14 +685,6 @@ export async function getJDESalesOrderById(soNumber: string): Promise<JDESalesOr
   } catch (error) {
     console.error("[JDE Database] Error fetching sales order:", error);
     return null;
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch (closeError) {
-        console.warn("[JDE Database] Error closing pool:", closeError);
-      }
-    }
   }
 }
 
@@ -657,22 +708,25 @@ export async function getJDEInventoryItems(): Promise<JDEInventoryItem[]> {
   }
 
   const query = `
-    SELECT
-      RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) AS itemCode,
+    SELECT DISTINCT
+      RTRIM(F4101.IMLITM) AS itemCode,
       RTRIM(ISNULL(F4101.IMDSC1, '')) AS description,
       RTRIM(ISNULL(F4101.IMSRP1, '')) AS category,
-      RTRIM(CONVERT(VARCHAR, ISNULL(F41021.LIPQOH, '0'))) AS quantityAvailable,
-      RTRIM(CONVERT(VARCHAR, ISNULL(F4102.IBROPI, '0'))) AS reorderPoint,
+      ISNULL(F41021.LIPQOH, 0) AS quantityAvailable,
+      ISNULL(F4102.IBROPI, 0) AS reorderPoint,
       (
-        SELECT TOP 1 RTRIM(CONVERT(VARCHAR, ISNULL(F4111.ILTRQT, '0')))
-        FROM CRPDTA.F4111 F4111
-        WHERE RTRIM(CONVERT(VARCHAR, F4111.ILITM)) = RTRIM(CONVERT(VARCHAR, F4101.IMLITM))
-        ORDER BY F4111.ILTRDJ DESC
+        SELECT TOP 1 F4111_2.ILTRQT
+        FROM dbo.F4111 F4111_2
+        WHERE F4111_2.ILITM = F4101.IMITM
+        ORDER BY F4111_2.ILTRDJ DESC
       ) AS transactionQuantity
-    FROM CRPDTA.F4101 F4101
-    LEFT JOIN CRPDTA.F41021 F41021 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F41021.LIITM))
-    LEFT JOIN CRPDTA.F4102 F4102 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F4102.IBITM))
-    ORDER BY F4101.IMLITM
+    FROM dbo.F4101 F4101
+    LEFT JOIN dbo.F41021 F41021 
+      ON F4101.IMITM = F41021.LIITM
+    LEFT JOIN dbo.F4102 F4102 
+      ON F4101.IMITM = F4102.IBITM
+    WHERE F4101.IMITM IS NOT NULL
+    ORDER BY itemCode
   `;
 
   try {
@@ -737,42 +791,34 @@ export async function getJDEInventoryItemByCode(itemCode: string): Promise<JDEIn
     return null;
   }
 
-  let pool: sql.ConnectionPool | null = null;
-  
+  const query = `
+    SELECT TOP 1
+      RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) AS itemCode,
+      RTRIM(ISNULL(F4101.IMDSC1, '')) AS description,
+      RTRIM(ISNULL(F4101.IMSRP1, '')) AS category,
+      RTRIM(CONVERT(VARCHAR, ISNULL(F41021.LIPQOH, '0'))) AS quantityAvailable,
+      RTRIM(CONVERT(VARCHAR, ISNULL(F4102.IBROPI, '0'))) AS reorderPoint,
+      (
+        SELECT TOP 1 RTRIM(CONVERT(VARCHAR, ISNULL(F4111.ILTRQT, '0')))
+        FROM dbo.F4111 F4111
+        WHERE RTRIM(CONVERT(VARCHAR, F4111.ILITM)) = RTRIM(CONVERT(VARCHAR, F4101.IMLITM))
+        ORDER BY F4111.ILTRDJ DESC
+      ) AS transactionQuantity
+    FROM dbo.F4101 F4101
+    LEFT JOIN dbo.F41021 F41021 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F41021.LIITM))
+    LEFT JOIN dbo.F4102 F4102 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F4102.IBITM))
+    WHERE RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = '${itemCode}'
+    ORDER BY RTRIM(CONVERT(VARCHAR, F4101.IMLITM))
+  `;
+
   try {
-    pool = await getJDEDb();
-    if (!pool) {
-      return null;
-    }
-
-    const query = `
-      SELECT TOP 1
-        RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) AS itemCode,
-        RTRIM(ISNULL(F4101.IMDSC1, '')) AS description,
-        RTRIM(ISNULL(F4101.IMSRP1, '')) AS category,
-        RTRIM(CONVERT(VARCHAR, ISNULL(F41021.LIPQOH, '0'))) AS quantityAvailable,
-        RTRIM(CONVERT(VARCHAR, ISNULL(F4102.IBROPI, '0'))) AS reorderPoint,
-        (
-          SELECT TOP 1 RTRIM(CONVERT(VARCHAR, ISNULL(F4111.ILTRQT, '0')))
-          FROM CRPDTA.F4111 F4111
-          WHERE RTRIM(CONVERT(VARCHAR, F4111.ILITM)) = RTRIM(CONVERT(VARCHAR, F4101.IMLITM))
-          ORDER BY F4111.ILTRDJ DESC
-        ) AS transactionQuantity
-      FROM CRPDTA.F4101 F4101
-      LEFT JOIN CRPDTA.F41021 F41021 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F41021.LIITM))
-      LEFT JOIN CRPDTA.F4102 F4102 ON RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = RTRIM(CONVERT(VARCHAR, F4102.IBITM))
-      WHERE RTRIM(CONVERT(VARCHAR, F4101.IMLITM)) = '${itemCode}'
-      ORDER BY RTRIM(CONVERT(VARCHAR, F4101.IMLITM))
-    `;
-
-    const request = pool.request();
-    const result = await request.query(query);
+    const rows = await executeQuery<any>(query);
     
-    if (result.recordset.length === 0) {
+    if (rows.length === 0) {
       return null;
     }
 
-    const row = result.recordset[0];
+    const row = rows[0];
     const quantityAvailable = Number(row.quantityAvailable) || 0;
     const transactionQuantity = Number(row.transactionQuantity) || 0;
     
@@ -817,14 +863,6 @@ export async function getJDEInventoryItemByCode(itemCode: string): Promise<JDEIn
   } catch (error) {
     console.error("[JDE Database] Error fetching inventory item:", error);
     return null;
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch (closeError) {
-        console.warn("[JDE Database] Error closing pool:", closeError);
-      }
-    }
   }
 }
 
@@ -861,10 +899,10 @@ export async function getJDEShipments(): Promise<JDEShipment[]> {
       RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
       RTRIM(ISNULL(F0116.ALCTY1, '')) AS originCity,
       RTRIM(ISNULL(F0116.ALCTR, '')) AS originCountry
-    FROM CRPDTA.F4215 F4215
-    LEFT JOIN CRPDTA.F4211 F4211 ON RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = RTRIM(CONVERT(VARCHAR, F4211.SDDOCO))
-    LEFT JOIN CRPDTA.F0116 F0116 ON F4215.XHAN8 = F0116.ALAN8
-    LEFT JOIN CRPDTA.F0101 F0101Dest ON F4211.SDSHAN = F0101Dest.ABAN8
+    FROM dbo.F4215 F4215
+    LEFT JOIN dbo.F4211 F4211 ON RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = RTRIM(CONVERT(VARCHAR, F4211.SDDOCO))
+    LEFT JOIN dbo.F0116 F0116 ON F4215.XHAN8 = F0116.ALAN8
+    LEFT JOIN dbo.F0101 F0101Dest ON F4211.SDSHAN = F0101Dest.ABAN8
     ORDER BY F4215.XHSHPN DESC
   `;
 
@@ -960,42 +998,34 @@ export async function getJDEShipmentById(shipmentNumber: string): Promise<JDEShi
     return null;
   }
 
-  let pool: sql.ConnectionPool | null = null;
-  
+  const query = `
+    SELECT TOP 1
+      RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) AS shipmentNumber,
+      RTRIM(ISNULL(F0101Dest.ABALPH, '')) AS destination,
+      CASE 
+        WHEN F4211.SDPDDJ IS NOT NULL AND TRY_CAST(F4211.SDPDDJ AS FLOAT) > 0 THEN 
+          CONVERT(VARCHAR, CAST(F4211.SDPDDJ AS INT))
+        ELSE ''
+      END AS eta,
+      RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
+      RTRIM(ISNULL(F0116.ALCTY1, '')) AS originCity,
+      RTRIM(ISNULL(F0116.ALCTR, '')) AS originCountry
+    FROM dbo.F4215 F4215
+    LEFT JOIN dbo.F4211 F4211 ON RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = RTRIM(CONVERT(VARCHAR, F4211.SDDOCO))
+    LEFT JOIN dbo.F0116 F0116 ON F4215.XHAN8 = F0116.ALAN8
+    LEFT JOIN dbo.F0101 F0101Dest ON F4211.SDSHAN = F0101Dest.ABAN8
+    WHERE RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = '${shipmentNumber}'
+    ORDER BY F4215.XHSHPN DESC
+  `;
+
   try {
-    pool = await getJDEDb();
-    if (!pool) {
-      return null;
-    }
-
-    const query = `
-      SELECT TOP 1
-        RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) AS shipmentNumber,
-        RTRIM(ISNULL(F0101Dest.ABALPH, '')) AS destination,
-        CASE 
-          WHEN F4211.SDPDDJ IS NOT NULL AND TRY_CAST(F4211.SDPDDJ AS FLOAT) > 0 THEN 
-            CONVERT(VARCHAR, CAST(F4211.SDPDDJ AS INT))
-          ELSE ''
-        END AS eta,
-        RTRIM(ISNULL(F4211.SDNXTR, '')) AS status,
-        RTRIM(ISNULL(F0116.ALCTY1, '')) AS originCity,
-        RTRIM(ISNULL(F0116.ALCTR, '')) AS originCountry
-      FROM CRPDTA.F4215 F4215
-      LEFT JOIN CRPDTA.F4211 F4211 ON RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = RTRIM(CONVERT(VARCHAR, F4211.SDDOCO))
-      LEFT JOIN CRPDTA.F0116 F0116 ON F4215.XHAN8 = F0116.ALAN8
-      LEFT JOIN CRPDTA.F0101 F0101Dest ON F4211.SDSHAN = F0101Dest.ABAN8
-      WHERE RTRIM(CONVERT(VARCHAR, F4215.XHSHPN)) = '${shipmentNumber}'
-      ORDER BY F4215.XHSHPN DESC
-    `;
-
-    const request = pool.request();
-    const result = await request.query(query);
+    const rows = await executeQuery<any>(query);
     
-    if (result.recordset.length === 0) {
+    if (rows.length === 0) {
       return null;
     }
 
-    const row = result.recordset[0];
+    const row = rows[0];
     return {
       shipmentNumber: row.shipmentNumber || "",
       carrier: "TBD",
@@ -1009,17 +1039,143 @@ export async function getJDEShipmentById(shipmentNumber: string): Promise<JDEShi
   } catch (error) {
     console.error("[JDE Database] Error fetching shipment:", error);
     return null;
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch (closeError) {
-        console.warn("[JDE Database] Error closing pool:", closeError);
-      }
-    }
   }
 }
 
-// Export MSSQL for type references
+// ============ JDE SUPPLIERS INTERFACE ============
+export interface JDESupplier {
+  id: string;
+  name: string;
+  type: string;
+  country: string;
+  leadDays: number;
+  reliabilityScore?: number;
+  qualityScore?: number;
+}
+
+export async function getJDESuppliers(): Promise<JDESupplier[]> {
+  const config = getJDEConfig();
+  
+  if (!config.MSSQL_USER || !config.MSSQL_PASSWORD || !config.MSSQL_HOST) {
+    console.warn("[JDE Database] MSSQL credentials not configured");
+    return [];
+  }
+
+  const suppliersQuery = `
+    SELECT
+      RTRIM(CONVERT(VARCHAR, F0101.ABAN8)) AS id,
+      RTRIM(ISNULL(F0101.ABALPH, '')) AS name,
+      RTRIM(ISNULL(F0101.ABAT1, '')) AS type,
+      RTRIM(ISNULL(F0116.ALCTR, '')) AS country,
+      COALESCE(TRY_CAST(F4311.PDPDDJ AS INT), 0) - COALESCE(TRY_CAST(F4311.PDTRDJ AS INT), 0) AS leadDays
+    FROM dbo.F0101 F0101
+    LEFT JOIN dbo.F0116 F0116 ON F0101.ABAN8 = F0116.ALAN8
+    LEFT JOIN dbo.F4311 F4311 ON F0101.ABAN8 = F4311.PDAN8
+    WHERE F0101.ABAT1 = 'VEND'
+      AND F0101.ABAN8 IS NOT NULL
+      AND F0101.ABALPH IS NOT NULL
+      AND RTRIM(F0101.ABALPH) <> ''
+    GROUP BY F0101.ABAN8, F0101.ABALPH, F0101.ABAT1, F0116.ALCTR, F4311.PDPDDJ, F4311.PDTRDJ
+    ORDER BY F0101.ABALPH ASC
+  `;
+
+  const reliabilityQuery = `
+    SELECT 
+      F4311.PDAN8 AS supplierId,
+      COUNT(*) AS totalReceipts,
+      SUM(CASE 
+        WHEN F43121.PRRCDJ IS NOT NULL AND F43121.PRRCDJ > 0 
+             AND F4311.PDDRQJ IS NOT NULL AND F4311.PDDRQJ > 0
+             AND F43121.PRRCDJ <= F4311.PDDRQJ 
+        THEN 1 ELSE 0 END) AS reliableReceipts
+    FROM dbo.F4311 F4311
+    INNER JOIN dbo.F43121 F43121 ON F4311.PDDOCO = F43121.PRDOCO 
+      AND F4311.PDDCTO = F43121.PRDCTO 
+      AND F4311.PDLNID = F43121.PRLNID
+    WHERE F43121.PRRCDJ IS NOT NULL AND F43121.PRRCDJ > 0
+    GROUP BY F4311.PDAN8
+  `;
+
+  const qualityQuery = `
+    SELECT 
+      F4311.PDAN8 AS supplierId,
+      SUM(COALESCE(TRY_CAST(F4311.PDUORG AS FLOAT), 0)) AS totalOrdered,
+      SUM(COALESCE(TRY_CAST(F4311.PDUORG AS FLOAT), 0) - COALESCE(TRY_CAST(F4311.PDUOPN AS FLOAT), 0)) AS totalReceived
+    FROM dbo.F4311 F4311
+    WHERE F4311.PDUORG IS NOT NULL AND F4311.PDUORG > 0
+    GROUP BY F4311.PDAN8
+  `;
+
+  try {
+    const [supplierRows, reliabilityRows, qualityRows] = await Promise.all([
+      executeQuery<any>(suppliersQuery),
+      executeQuery<any>(reliabilityQuery),
+      executeQuery<any>(qualityQuery),
+    ]);
+
+    const reliabilityMap = new Map<string, { total: number; reliable: number }>();
+    for (const row of reliabilityRows) {
+      reliabilityMap.set(String(row.supplierId), {
+        total: Number(row.totalReceipts) || 0,
+        reliable: Number(row.reliableReceipts) || 0,
+      });
+    }
+
+    const qualityMap = new Map<string, { ordered: number; received: number }>();
+    for (const row of qualityRows) {
+      qualityMap.set(String(row.supplierId), {
+        ordered: Number(row.totalOrdered) || 0,
+        received: Number(row.totalReceived) || 0,
+      });
+    }
+
+    const supplierMap = new Map<string, JDESupplier>();
+    
+    for (const row of supplierRows) {
+      const supplierId = row.id;
+      if (!supplierMap.has(supplierId)) {
+        const relData = reliabilityMap.get(supplierId);
+        let reliabilityScore: number | undefined;
+        
+        if (relData && relData.total > 0) {
+          reliabilityScore = Math.round((relData.reliable / relData.total) * 1000) / 10;
+        }
+
+        const qualData = qualityMap.get(supplierId);
+        let qualityScore: number | undefined;
+        
+        if (qualData && qualData.ordered > 0) {
+          qualityScore = Math.round((qualData.received / qualData.ordered) * 1000) / 10;
+        }
+        
+        supplierMap.set(supplierId, {
+          id: supplierId,
+          name: row.name || "",
+          type: row.type || "",
+          country: row.country || "",
+          leadDays: Number(row.leadDays) || 0,
+          reliabilityScore,
+          qualityScore,
+        });
+      }
+    }
+    
+    return Array.from(supplierMap.values());
+  } catch (error) {
+    console.error("[JDE Database] Error fetching suppliers:", error);
+    return [];
+  }
+}
+
+export async function getJDEDelayedPurchaseOrders(): Promise<JDEPurchaseOrder[]> {
+  const allOrders = await getJDEPurchaseOrders();
+  return allOrders.filter(po => po.riskLevel === "red");
+}
+
+export async function getJDEAtRiskShipments(): Promise<JDEShipment[]> {
+  const allShipments = await getJDEShipments();
+  return allShipments.filter(shipment => shipment.riskLevel === "red" || shipment.riskLevel === "yellow");
+}
+
 export { sql };
 

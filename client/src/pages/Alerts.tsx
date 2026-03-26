@@ -172,6 +172,20 @@ export default function Alerts() {
       alert.title.toLowerCase().includes(query) ||
       alert.message.toLowerCase().includes(query)
     );
+  })
+  // Sort: unread first, then by severity, then by type and ID for stability
+  .sort((a: any, b: any) => {
+    // Unread first
+    if (!a.isRead && b.isRead) return -1;
+    if (a.isRead && !b.isRead) return 1;
+    // Then by severity (critical first)
+    const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+    const severityDiff = (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
+    if (severityDiff !== 0) return severityDiff;
+    // Then by type for stability
+    if (a.type !== b.type) return a.type.localeCompare(b.type);
+    // Finally by ID
+    return a.id - b.id;
   });
 
   const unreadCount = alerts?.filter((a: any) => !a.isRead).length || 0;

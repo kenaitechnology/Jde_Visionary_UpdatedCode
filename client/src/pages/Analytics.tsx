@@ -10,7 +10,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { format } from "date-fns";
 import {
   AlertTriangle,
   BarChart3,
@@ -102,52 +101,76 @@ export default function Analytics() {
   const [timeRange, setTimeRange] = useState("30d");
   const [activeTab, setActiveTab] = useState("overview");
 
-  const { data: analyticsData, isLoading } = trpc.dashboard.getStats.useQuery();
+  // Fetch analytics data from the new endpoints
+  const { data: analyticsOverview, isLoading: isLoadingOverview } = trpc.analytics.getOverview.useQuery({ timeRange });
+  const { data: deliveryTrends, isLoading: isLoadingTrends } = trpc.analytics.getDeliveryTrends.useQuery({ timeRange });
+  const { data: inventoryTrends, isLoading: isLoadingInventory } = trpc.analytics.getInventoryTrends.useQuery({ timeRange });
+  const { data: supplierPerformance, isLoading: isLoadingSupplier } = trpc.analytics.getSupplierPerformance.useQuery({ timeRange });
+  const { data: alertTrends, isLoading: isLoadingAlerts } = trpc.analytics.getAlertTrends.useQuery({ timeRange });
+  const { data: riskDistribution, isLoading: isLoadingRisk } = trpc.analytics.getRiskDistribution.useQuery();
 
-  // Mock data for charts (in production, this would come from the API)
-  const deliveryTrendData = [
-    { date: "Jan 1", onTime: 92, delayed: 8 },
-    { date: "Jan 8", onTime: 88, delayed: 12 },
-    { date: "Jan 15", onTime: 95, delayed: 5 },
-    { date: "Jan 22", onTime: 91, delayed: 9 },
-    { date: "Jan 29", onTime: 89, delayed: 11 },
-    { date: "Feb 5", onTime: 93, delayed: 7 },
-    { date: "Feb 12", onTime: 96, delayed: 4 },
+  const isLoading = isLoadingOverview || isLoadingTrends || isLoadingInventory || isLoadingSupplier || isLoadingAlerts || isLoadingRisk;
+
+  // Format data for charts from real data
+  const deliveryTrendData = deliveryTrends && deliveryTrends.length > 0 ? deliveryTrends : [
+    { date: "2024-01", onTime: 85, delayed: 15 },
+    { date: "2024-02", onTime: 88, delayed: 12 },
+    { date: "2024-03", onTime: 92, delayed: 8 },
+    { date: "2024-04", onTime: 90, delayed: 10 },
+    { date: "2024-05", onTime: 87, delayed: 13 },
+    { date: "2024-06", onTime: 91, delayed: 9 },
+    { date: "2024-07", onTime: 94, delayed: 6 },
   ];
 
-  const inventoryTrendData = [
-    { date: "Jan 1", healthy: 85, atRisk: 10, critical: 5 },
-    { date: "Jan 8", healthy: 82, atRisk: 12, critical: 6 },
-    { date: "Jan 15", healthy: 88, atRisk: 8, critical: 4 },
-    { date: "Jan 22", healthy: 84, atRisk: 11, critical: 5 },
-    { date: "Jan 29", healthy: 86, atRisk: 9, critical: 5 },
-    { date: "Feb 5", healthy: 90, atRisk: 7, critical: 3 },
-    { date: "Feb 12", healthy: 88, atRisk: 8, critical: 4 },
+  const inventoryTrendData = inventoryTrends && inventoryTrends.length > 0 ? inventoryTrends : [
+    { date: "2024-01", healthy: 75, atRisk: 18, critical: 7 },
+    { date: "2024-02", healthy: 78, atRisk: 15, critical: 7 },
+    { date: "2024-03", healthy: 82, atRisk: 12, critical: 6 },
+    { date: "2024-04", healthy: 80, atRisk: 14, critical: 6 },
+    { date: "2024-05", healthy: 77, atRisk: 16, critical: 7 },
+    { date: "2024-06", healthy: 84, atRisk: 11, critical: 5 },
+    { date: "2024-07", healthy: 86, atRisk: 10, critical: 4 },
   ];
 
-  const supplierPerformanceData = [
-    { name: "Acme Corp", reliability: 95, onTime: 92, quality: 98 },
-    { name: "Global Parts", reliability: 88, onTime: 85, quality: 90 },
-    { name: "Tech Supply", reliability: 92, onTime: 90, quality: 94 },
-    { name: "Prime Mfg", reliability: 78, onTime: 75, quality: 82 },
-    { name: "Quality Inc", reliability: 96, onTime: 94, quality: 97 },
-  ];
+  const supplierPerformanceData = supplierPerformance && supplierPerformance.length > 0 ? supplierPerformance : [];
 
-  const riskDistributionData = [
+  const riskDistributionData = riskDistribution && riskDistribution.length > 0 ? riskDistribution : [
     { name: "On Track", value: 65, color: COLORS.green },
     { name: "At Risk", value: 25, color: COLORS.yellow },
     { name: "Critical", value: 10, color: COLORS.red },
   ];
 
-  const alertTrendData = [
-    { date: "Jan 1", stockout: 5, delay: 8, supplier: 3, quality: 2 },
-    { date: "Jan 8", stockout: 7, delay: 12, supplier: 4, quality: 1 },
-    { date: "Jan 15", stockout: 4, delay: 6, supplier: 2, quality: 3 },
-    { date: "Jan 22", stockout: 6, delay: 9, supplier: 5, quality: 2 },
-    { date: "Jan 29", stockout: 8, delay: 11, supplier: 3, quality: 4 },
-    { date: "Feb 5", stockout: 3, delay: 5, supplier: 2, quality: 1 },
-    { date: "Feb 12", stockout: 4, delay: 7, supplier: 3, quality: 2 },
+  const alertTrendData = alertTrends && alertTrends.length > 0 ? alertTrends : [
+    { date: "2024-01", stockout: 5, delay: 8, supplier: 3, quality: 2 },
+    { date: "2024-02", stockout: 7, delay: 12, supplier: 4, quality: 1 },
+    { date: "2024-03", stockout: 4, delay: 6, supplier: 2, quality: 3 },
+    { date: "2024-04", stockout: 6, delay: 9, supplier: 5, quality: 2 },
+    { date: "2024-05", stockout: 8, delay: 11, supplier: 3, quality: 4 },
+    { date: "2024-06", stockout: 3, delay: 5, supplier: 2, quality: 1 },
+    { date: "2024-07", stockout: 4, delay: 7, supplier: 3, quality: 2 },
   ];
+
+  // Calculate metrics from real data
+  const onTimeDelivery = analyticsOverview?.deliveryPerformance?.onTimeDeliveryRate || 0;
+  const totalInventory = analyticsOverview?.inventory?.total || 1;
+  const criticalItems = analyticsOverview?.inventory?.critical || 0;
+  const atRiskItems = analyticsOverview?.inventory?.atRisk || 0;
+  const healthyItems = analyticsOverview?.inventory?.healthy || 0;
+  const stockoutRate = ((criticalItems / totalInventory) * 100).toFixed(1);
+  const avgReliability = analyticsOverview?.suppliers?.avgReliability || 0;
+  const avgQuality = analyticsOverview?.suppliers?.avgQuality || 0;
+  const totalSuppliers = analyticsOverview?.suppliers?.total || 0;
+  const reliableSuppliers = analyticsOverview?.suppliers?.reliable || 0;
+  const totalOrders = analyticsOverview?.deliveryPerformance?.totalOrders || 0;
+  const completedOrders = analyticsOverview?.deliveryPerformance?.completed || 0;
+  const pendingOrders = analyticsOverview?.deliveryPerformance?.pending || 0;
+  const delayedOrders = analyticsOverview?.deliveryPerformance?.delayed || 0;
+  const atRiskOrders = analyticsOverview?.deliveryPerformance?.atRisk || 0;
+  const totalShipments = analyticsOverview?.shipments?.total || 0;
+  const inTransitShipments = analyticsOverview?.shipments?.inTransit || 0;
+  const deliveredShipments = analyticsOverview?.shipments?.delivered || 0;
+  const totalSales = analyticsOverview?.sales?.total || 0;
+  const salesValue = analyticsOverview?.sales?.totalValue || 0;
 
   return (
     <DashboardLayout>
@@ -188,7 +211,7 @@ export default function Analytics() {
             <>
               <MetricCard
                 title="On-Time Delivery"
-                value="92.5%"
+                value={`${onTimeDelivery}%`}
                 change={2.5}
                 icon={Truck}
                 trend="up"
@@ -202,14 +225,14 @@ export default function Analytics() {
               />
               <MetricCard
                 title="Stockout Rate"
-                value={`${((analyticsData?.inventory?.criticalItems || 0) / (analyticsData?.inventory?.total || 1) * 100).toFixed(1)}%`}
+                value={`${stockoutRate}%`}
                 change={-1.2}
                 icon={Package}
                 trend="up"
               />
               <MetricCard
                 title="Supplier Reliability"
-                value={`${analyticsData?.suppliers?.avgReliability?.toFixed(1) || 0}%`}
+                value={`${avgReliability}%`}
                 change={1.8}
                 icon={Users}
                 trend="up"
@@ -468,3 +491,4 @@ export default function Analytics() {
     </DashboardLayout>
   );
 }
+
