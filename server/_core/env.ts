@@ -9,9 +9,9 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   // JDE MSSQL Configuration
-  mssqlHost: process.env.MSSQL_HOST ?? "",
-  mssqlPort: parseInt(process.env.MSSQL_PORT ?? "1433"),
-  mssqlUser: process.env.MSSQL_USER ?? "",
-  mssqlPassword: process.env.MSSQL_PASSWORD ?? "",
-  mssqlDatabase: process.env.MSSQL_DATABASE ?? "JDE_AI", // Default to JDE_AI, can be overridden by env
+  mssqlHost: process.env.JDE_MSSQL_SERVER ?? process.env.MSSQL_HOST ?? "",
+  mssqlPort: parseInt(process.env.JDE_MSSQL_PORT ?? process.env.MSSQL_PORT ?? "1433"),
+  mssqlUser: process.env.JDE_MSSQL_USER ?? process.env.MSSQL_USER ?? "",
+  mssqlPassword: process.env.JDE_MSSQL_PASSWORD ?? process.env.MSSQL_PASSWORD ?? "",
+  mssqlDatabase: process.env.JDE_MSSQL_DATABASE ?? process.env.MSSQL_DATABASE ?? "JDE_AI", // Default to JDE_AI, can be overridden by env
 };

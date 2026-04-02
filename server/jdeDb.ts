@@ -1177,5 +1177,92 @@ export async function getJDEAtRiskShipments(): Promise<JDEShipment[]> {
   return allShipments.filter(shipment => shipment.riskLevel === "red" || shipment.riskLevel === "yellow");
 }
 
+export async function createAlertResolutionsTable(): Promise<void> {
+  const query = `
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='alert_resolutions' AND xtype='U')
+    CREATE TABLE [dbo].[alert_resolutions] (
+        [id] INT IDENTITY(1,1) PRIMARY KEY,
+        [alert_id] INT NOT NULL,
+        [user_id] INT NOT NULL,
+        [action_taken] NVARCHAR(MAX),
+        [resolved_at] DATETIME2 DEFAULT GETDATE(),
+        [created_at] DATETIME2 DEFAULT GETDATE(),
+        [updated_at] DATETIME2 DEFAULT GETDATE()
+    );
+
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='IX_alert_resolutions_alert_id')
+    CREATE INDEX IX_alert_resolutions_alert_id ON [dbo].[alert_resolutions] ([alert_id]);
+
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='IX_alert_resolutions_user_id')
+    CREATE INDEX IX_alert_resolutions_user_id ON [dbo].[alert_resolutions] ([user_id]);
+  `;
+
+  try {
+    await executeQuery(query);
+    console.log("[JDE Database] Alert resolutions table created/verified");
+  } catch (error) {
+    console.error("[JDE Database] Error creating alert resolutions table:", error);
+    throw error;
+  }
+}
+
+export async function resolveAlert(alertId: number, userId: number, actionTaken: string): Promise<void> {
+  const query = `
+    MERGE [dbo].[alert_resolutions] AS target
+    USING (SELECT @alertId as alert_id, @userId as user_id, @actionTaken as action_taken) AS source
+    ON target.alert_id = source.alert_id AND target.user_id = source.user_id
+    WHEN MATCHED THEN
+        UPDATE SET 
+            action_taken = source.action_taken,
+            resolved_at = GETDATE(),
+            updated_at = GETDATE()
+    WHEN NOT MATCHED THEN
+        INSERT (alert_id, user_id, action_taken, resolved_at, created_at, updated_at)
+        VALUES (source.alert_id, source.user_id, source.action_taken, GETDATE(), GETDATE(), GETDATE());
+  `;
+
+  try {
+    const pool = await getPool();
+    if (!pool) {
+      throw new Error("Database not available");
+    }
+
+    const request = pool.request();
+    request.input('alertId', sql.Int, alertId);
+    request.input('userId', sql.Int, userId);
+    request.input('actionTaken', sql.NVarChar, actionTaken);
+
+    await request.query(query);
+    console.log(`[JDE Database] Alert ${alertId} resolved by user ${userId}`);
+  } catch (error) {
+    console.error("[JDE Database] Error resolving alert:", error);
+    throw error;
+  }
+}
+
+export async function getResolvedAlerts(userId: number): Promise<number[]> {
+  const query = `
+    SELECT alert_id
+    FROM [dbo].[alert_resolutions]
+    WHERE user_id = @userId
+  `;
+
+  try {
+    const pool = await getPool();
+    if (!pool) {
+      return [];
+    }
+
+    const request = pool.request();
+    request.input('userId', sql.Int, userId);
+
+    const result = await request.query(query);
+    return result.recordset.map((row: any) => row.alert_id);
+  } catch (error) {
+    console.error("[JDE Database] Error getting resolved alerts:", error);
+    return [];
+  }
+}
+
 export { sql };
 

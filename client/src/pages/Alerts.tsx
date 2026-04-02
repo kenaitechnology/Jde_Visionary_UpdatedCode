@@ -1,5 +1,4 @@
 import DashboardLayout from "@/components/DashboardLayout";
-
 import { useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,9 +40,8 @@ import {
   Users,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { toast } from "sonner";
-import type { Alert } from "@/../../drizzle/schema";
 
 function SeverityBadge({ severity }: { severity: string }) {
   const config: Record<string, { variant: "default" | "secondary" | "outline" | "destructive"; label: string }> = {
@@ -72,7 +70,6 @@ function AlertTypeIcon({ type }: { type: string }) {
   return <Icon className="h-5 w-5" />;
 }
 
-// Helper functions moved here to be available for AlertCard
 const isJDEAlert = (alert: any): boolean => alert.id < 0;
 
 const getEffectiveIsRead = (alert: any, readAlerts: Set<number>): boolean => {
@@ -89,14 +86,21 @@ const getEffectiveIsResolved = (alert: any, resolvedAlerts: Set<number>): boolea
   return resolvedAlerts.has(alert.id);
 };
 
-function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }: { alert: any; onMarkRead: () => void; onResolve: () => void; readAlerts: Set<number>; resolvedAlerts: Set<number> }) {
+function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }: { 
+  alert: any; 
+  onMarkRead: () => void; 
+  onResolve: () => void; 
+  readAlerts: Set<number>; 
+  resolvedAlerts: Set<number> 
+}) {
   const severityColors: Record<string, string> = {
     info: "border-l-[oklch(0.60_0.15_250)]",
     warning: "border-l-[oklch(0.80_0.18_85)]",
     critical: "border-l-[oklch(0.55_0.25_27)]",
   };
 
-  const effectiveIsRead = alert.effectiveIsRead ?? getEffectiveIsRead(alert, readAlerts); // Fallback
+  const effectiveIsRead = getEffectiveIsRead(alert, readAlerts);
+  const effectiveIsResolved = getEffectiveIsResolved(alert, resolvedAlerts);
 
   return (
     <Card className={`border-l-4 ${severityColors[alert.severity] || "border-l-border"}`}>
@@ -114,14 +118,14 @@ function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }:
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-4 mb-2">
               <div>
-                <h3 className="font-semibold">{alert.title}</h3>
+                <h3 className="font-semibold line-clamp-2">{alert.title}</h3>
                 <p className="text-xs text-muted-foreground capitalize">
                   {alert.type.replace(/_/g, " ")} • {formatDistanceToNow(new Date(alert.createdAt), { addSuffix: true })}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <SeverityBadge severity={alert.severity} />
-                {alert.isResolved && (
+                {effectiveIsResolved && (
                   <Badge variant="outline" className="text-[oklch(0.65_0.2_145)]">
                     <CheckCircle2 className="h-3 w-3 mr-1" />
                     Resolved
@@ -129,17 +133,17 @@ function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }:
                 )}
               </div>
             </div>
-            <p className="text-sm text-muted-foreground mb-4">{alert.message}</p>
-            <div className="flex items-center gap-2">
+            <p className="text-sm text-muted-foreground mb-4 line-clamp-2">{alert.message}</p>
+            <div className="flex flex-wrap items-center gap-2">
               {!effectiveIsRead && (
-                <Button variant="outline" size="sm" onClick={onMarkRead}>
-                  <Check className="mr-2 h-4 w-4" />
-                  Mark as Read
+                <Button variant="outline" size="sm" onClick={onMarkRead} className="h-8 px-3">
+                  <Check className="mr-1.5 h-3.5 w-3.5" />
+                  Read
                 </Button>
               )}
-              {!alert.isResolved && (
-                <Button variant="default" size="sm" onClick={onResolve}>
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
+              {!effectiveIsResolved && (
+                <Button variant="default" size="sm" onClick={onResolve} className="h-8 px-3">
+                  <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
                   Resolve
                 </Button>
               )}
@@ -153,8 +157,6 @@ function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }:
 
 export default function Alerts() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [readAlerts, setReadAlerts] = useState<Set<number>>(new Set());
-  const [resolvedAlerts, setResolvedAlerts] = useState<Set<number>>(new Set());
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState("unread");
@@ -162,337 +164,299 @@ export default function Alerts() {
   const [showResolveDialog, setShowResolveDialog] = useState(false);
   const [actionTaken, setActionTaken] = useState("");
 
+  // localStorage state
+  const [readAlerts, setReadAlerts] = useState<Set<number>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem("jde-visionary-alerts-read");
+        return stored ? new Set(JSON.parse(stored)) : new Set();
+      } catch {
+        return new Set();
+      }
+    }
+    return new Set();
+  });
+  const [resolvedAlerts, setResolvedAlerts] = useState<Set<number>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem("jde-visionary-alerts-resolved");
+        return stored ? new Set(JSON.parse(stored)) : new Set();
+      } catch {
+        return new Set();
+      }
+    }
+    return new Set();
+  });
+
   const utils = trpc.useUtils();
+  const resolveMutation = trpc.alert.resolve.useMutation();
 
-  // Client-side read state for ephemeral JDE alerts
-  const READ_ALERTS_KEY = "jde-visionary-alerts-read";
-  const RESOLVED_ALERTS_KEY = "jde-visionary-alerts-resolved";
-
-  const getReadAlerts = (): Set<number> => {
+  const saveAlertsState = useCallback(() => {
     try {
-      const stored = localStorage.getItem(READ_ALERTS_KEY);
-      if (stored) {
-        return new Set(JSON.parse(stored));
-      }
-    } catch {
-      // Ignore parse errors
-    }
-    return new Set();
-  };
+      localStorage.setItem("jde-visionary-alerts-read", JSON.stringify(Array.from(readAlerts)));
+      localStorage.setItem("jde-visionary-alerts-resolved", JSON.stringify(Array.from(resolvedAlerts)));
+    } catch {}
+  }, [readAlerts, resolvedAlerts]);
 
-  const getResolvedAlerts = (): Set<number> => {
-    try {
-      const stored = localStorage.getItem(RESOLVED_ALERTS_KEY);
-      if (stored) {
-        return new Set(JSON.parse(stored));
-      }
-    } catch {
-      // Ignore parse errors
-    }
-    return new Set();
-  };
-
-  const saveReadAlerts = (alerts: Set<number>) => {
-    try {
-      localStorage.setItem(READ_ALERTS_KEY, JSON.stringify(Array.from(alerts)));
-    } catch {
-      // Ignore storage errors
-    }
-  };
-
-  const saveResolvedAlerts = (alerts: Set<number>) => {
-    try {
-      localStorage.setItem(RESOLVED_ALERTS_KEY, JSON.stringify(Array.from(alerts)));
-    } catch {
-      // Ignore storage errors
-    }
-  };
-
-  const markAlertRead = (id: number) => {
+  const markAlertRead = useCallback((id: number) => {
     const newRead = new Set(readAlerts);
     newRead.add(id);
     setReadAlerts(newRead);
-    saveReadAlerts(newRead);
-  };
+    saveAlertsState();
+    toast.success("Marked as read");
+  }, [readAlerts, saveAlertsState]);
 
-  const markAlertResolved = (id: number) => {
-    const newResolved = new Set(resolvedAlerts);
-    newResolved.add(id);
-    setResolvedAlerts(newResolved);
-    saveResolvedAlerts(newResolved);
-  };
+  const markAlertResolved = useCallback(async (id: number, switchToResolved = false) => {
+    try {
+      // Call the server to resolve the alert
+      await resolveMutation.mutateAsync({
+        id,
+        actionTaken: "Resolved via UI" // Default action taken
+      });
+
+      // Update local state for immediate UI feedback
+      const newResolved = new Set(resolvedAlerts);
+      newResolved.add(id);
+      setResolvedAlerts(newResolved);
+
+      if (switchToResolved) {
+        setActiveTab("resolved");
+      }
+
+      saveAlertsState();
+      toast.success("Marked as resolved");
+    } catch (error) {
+      console.error("Error resolving alert:", error);
+      toast.error("Failed to resolve alert");
+    }
+  }, [resolvedAlerts, saveAlertsState, resolveMutation]);
 
   useEffect(() => {
-    const loadedRead = getReadAlerts();
-    const loadedResolved = getResolvedAlerts();
-    setReadAlerts(loadedRead);
-    setResolvedAlerts(loadedResolved);
-  }, []); 
-
-  useEffect(() => {
-    saveReadAlerts(readAlerts);
-  }, [readAlerts]);
+    saveAlertsState();
+    utils.alert.list.refetch();
+  }, [readAlerts, resolvedAlerts]);
 
   const { data: rawAlerts, isLoading, refetch } = trpc.alert.list.useQuery({
     type: typeFilter !== "all" ? typeFilter : undefined,
     severity: severityFilter !== "all" ? severityFilter : undefined,
     isRead: activeTab === "unread" ? false : undefined,
     isResolved: activeTab === "resolved" ? true : activeTab === "unread" ? false : undefined,
+  }, {
+    refetchOnWindowFocus: false,
   });
 
-  const alerts = rawAlerts?.map((alert: any) => ({
+  const alerts = rawAlerts?.map((alert) => ({
     ...alert,
     effectiveIsRead: getEffectiveIsRead(alert, readAlerts),
     effectiveIsResolved: getEffectiveIsResolved(alert, resolvedAlerts),
   })) || [];
 
-const markAsRead = trpc.alert.markAsRead.useMutation({
-    onMutate: async ({ id }) => {
-      // Optimistic update for ALL alerts (works everywhere)
-      markAlertRead(id);
-      toast.success("Marked as read");
-      // Don't invalidate - localStorage handles state
-      return { previousAlerts: utils.alert.list.getData(), previousUnread: utils.alert.getUnread.getData() };
-    },
-    onError: (err, { id }, context) => {
-      toast.error(`Mark read failed: ${err.message}`);
-      // Rollback localStorage on error
-      const newRead = new Set(readAlerts);
-      newRead.delete(id);
-      setReadAlerts(newRead);
-      saveReadAlerts(newRead);
-    },
-    onSettled: () => {
-      // Refetch only if needed, but local state primary
-      utils.alert.list.invalidate();
-    },
-  });
-
-const resolveAlert = trpc.alert.resolve.useMutation({
-    onMutate: async ({ id }) => {
-      // Optimistic local state update
-      markAlertResolved(id);
-      toast.success("Alert resolved locally");
-      return { previousAlerts: utils.alert.list.getData(), previousUnread: utils.alert.getUnread.getData() };
-    },
-    onError: (err, { id }, context) => {
-      toast.error(`Resolve failed: ${err.message}. Kept local state.`);
-      const newResolved = new Set(resolvedAlerts);
-      newResolved.delete(id);
-      setResolvedAlerts(newResolved);
-      saveResolvedAlerts(newResolved);
-    },
-    onSettled: () => {
-      // Graceful refetch
-      utils.alert.list.invalidate();
-    },
-  });
-
-  const filteredAlerts = alerts?.filter((alert: any) => {
-    // Filter unread: not read AND not resolved
-    if (activeTab === "unread" && (alert.effectiveIsRead || alert.effectiveIsResolved)) return false;
-    // Filter resolved: resolved
-    if (activeTab === "resolved" && !alert.effectiveIsResolved) return false;
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      alert.title.toLowerCase().includes(query) ||
-      alert.message.toLowerCase().includes(query)
-    );
-  })
-  // Sort: unread first, then by severity, then by type and ID for stability
-  .sort((a: any, b: any) => {
-    // Unread first
-    if (!a.isRead && b.isRead) return -1;
-    if (a.isRead && !b.isRead) return 1;
-    // Then by severity (critical first)
-    const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
-    const severityDiff = (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
-    if (severityDiff !== 0) return severityDiff;
-    // Then by type for stability
-    if (a.type !== b.type) return a.type.localeCompare(b.type);
-    // Finally by ID
-    return a.id - b.id;
-  });
-
-  const unreadCount = alerts.filter((a: any) => !a.effectiveIsRead && !a.effectiveIsResolved).length;
-  useEffect(() => {
-    utils.alert.list.refetch();
-  }, [readAlerts, resolvedAlerts]);
-  const criticalCount = alerts?.filter((a: any) => a.severity === "critical" && !a.isResolved).length || 0;
+  const unreadCount = alerts.filter((a) => !getEffectiveIsRead(a, readAlerts) && !getEffectiveIsResolved(a, resolvedAlerts)).length;
 
   const handleResolve = (alert: any) => {
     setSelectedAlert(alert);
     setShowResolveDialog(true);
   };
 
-  const submitResolve = () => {
+  const submitResolve = useCallback(async () => {
     if (!selectedAlert || !actionTaken.trim()) return;
-    resolveAlert.mutate({
-      id: selectedAlert.id,
-      actionTaken: actionTaken.trim(),
-    });
-  };
+
+    try {
+      // Call the server to resolve the alert
+      await resolveMutation.mutateAsync({
+        id: selectedAlert.id,
+        actionTaken: actionTaken.trim()
+      });
+
+      // Update local state for immediate UI feedback
+      const newResolved = new Set(resolvedAlerts);
+      newResolved.add(selectedAlert.id);
+      setResolvedAlerts(newResolved);
+
+      setActiveTab("resolved");
+      setShowResolveDialog(false);
+      setActionTaken("");
+      saveAlertsState();
+      toast.success("Marked as resolved");
+    } catch (error) {
+      console.error("Error resolving alert:", error);
+      toast.error("Failed to resolve alert");
+    }
+  }, [selectedAlert, actionTaken, resolvedAlerts, saveAlertsState, resolveMutation]);
+
+  const filteredAlerts = alerts.filter((alert) => {
+    const effectiveRead = getEffectiveIsRead(alert, readAlerts);
+    const effectiveResolved = getEffectiveIsResolved(alert, resolvedAlerts);
+    
+    if (activeTab === "unread" && (effectiveRead || effectiveResolved)) return false;
+    if (activeTab === "resolved" && !effectiveResolved) return false;
+    
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      return alert.title.toLowerCase().includes(query) || alert.message.toLowerCase().includes(query);
+    }
+    
+    return true;
+  }).sort((a, b) => {
+    const aResolved = getEffectiveIsResolved(a, resolvedAlerts);
+    const bResolved = getEffectiveIsResolved(b, resolvedAlerts);
+    if (aResolved !== bResolved) return bResolved ? -1 : 1;
+    
+    const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+    const severityDiff = (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
+    if (severityDiff !== 0) return severityDiff;
+    
+    return a.id - b.id;
+  });
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <div className="accent-square-lg" />
-              <h1 className="text-3xl font-bold tracking-tight">Alerts</h1>
+              <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+                <Bell className="h-5 w-5 text-primary" />
+              </div>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Alerts</h1>
             </div>
-            <p className="text-muted-foreground">
-              Monitor and respond to supply chain alerts
-            </p>
+            <p className="text-muted-foreground">Monitor and respond to supply chain alerts</p>
           </div>
-          <Button variant="outline" onClick={() => refetch()}>
+          <Button variant="outline" onClick={() => refetch()} size="sm">
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
         </div>
 
-        {/* Summary Cards */}
         <div className="grid gap-4 md:grid-cols-4">
-          <Card className="metric-card">
+          <Card>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-caption">Total Alerts</p>
-          <p className="text-3xl font-bold">{rawAlerts?.length || 0}</p>
+                  <p className="text-sm text-muted-foreground">Total Alerts</p>
+                  <p className="text-2xl font-bold">{rawAlerts?.length || 0}</p>
                 </div>
                 <Bell className="h-8 w-8 text-muted-foreground" />
               </div>
             </CardContent>
           </Card>
-          <Card className="metric-card">
+          <Card>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-caption">Unread</p>
-                  <p className="text-3xl font-bold text-[oklch(0.55_0.25_27)]">
-                    {alerts.filter((a: any) => !a.effectiveIsRead && !a.effectiveIsResolved).length}
-                  </p>
+                  <p className="text-sm text-muted-foreground">Unread</p>
+                  <p className="text-2xl font-bold text-destructive">{unreadCount}</p>
                 </div>
-                <BellOff className="h-8 w-8 text-[oklch(0.55_0.25_27)]" />
+                <BellOff className="h-8 w-8" />
               </div>
             </CardContent>
           </Card>
-          <Card className="metric-card">
+          <Card>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-caption">Critical</p>
-                  <p className="text-3xl font-bold text-[oklch(0.55_0.25_27)]">
-                    {alerts.filter((a: any) => a.severity === "critical" && !a.effectiveIsResolved).length}
-                  </p>
+                  <p className="text-sm text-muted-foreground">Resolved</p>
+                  <p className="text-2xl font-bold text-green-600">{alerts.filter((a) => getEffectiveIsResolved(a, resolvedAlerts)).length}</p>
                 </div>
-                <XCircle className="h-8 w-8 text-[oklch(0.55_0.25_27)]" />
+                <CheckCircle2 className="h-8 w-8 text-green-600" />
               </div>
             </CardContent>
           </Card>
-          <Card className="metric-card">
+          <Card>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-caption">Resolved Today</p>
-                  <p className="text-3xl font-bold text-[oklch(0.65_0.2_145)]">
-                    {alerts.filter((a: any) => a.effectiveIsResolved).length}
+                  <p className="text-sm text-muted-foreground">Critical</p>
+                  <p className="text-2xl font-bold text-destructive">
+                    {alerts.filter((a) => a.severity === "critical" && !getEffectiveIsResolved(a, resolvedAlerts)).length}
                   </p>
                 </div>
-                <CheckCircle2 className="h-8 w-8 text-[oklch(0.65_0.2_145)]" />
+                <XCircle className="h-8 w-8 text-destructive" />
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
-            <TabsTrigger value="unread" className="flex items-center gap-2">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="unread" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               Unread ({unreadCount})
             </TabsTrigger>
-            <TabsTrigger value="all">All Alerts</TabsTrigger>
-            <TabsTrigger value="resolved">Resolved</TabsTrigger>
+            <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              All ({rawAlerts?.length || 0})
+            </TabsTrigger>
+            <TabsTrigger value="resolved" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              Resolved ({alerts.filter((a) => getEffectiveIsResolved(a, resolvedAlerts)).length})
+            </TabsTrigger>
           </TabsList>
-
-          <TabsContent value={activeTab} className="space-y-4 mt-4">
-            {/* Filters */}
+          <TabsContent value={activeTab} className="mt-6">
             <Card>
-              <CardContent className="pt-6">
-                <div className="flex flex-col sm:flex-row gap-4">
+              <CardContent className="pt-6 pb-4">
+                <div className="flex flex-col lg:flex-row gap-3">
                   <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
                       placeholder="Search alerts..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-9"
+                      className="pl-10 h-10"
                     />
                   </div>
-                  <Select value={typeFilter} onValueChange={setTypeFilter}>
-                    <SelectTrigger className="w-[180px]">
-                      <Filter className="mr-2 h-4 w-4" />
-                      <SelectValue placeholder="Type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Types</SelectItem>
-                      <SelectItem value="stockout_warning">Stockout Warning</SelectItem>
-                      <SelectItem value="delivery_delay">Delivery Delay</SelectItem>
-                      <SelectItem value="supplier_issue">Supplier Issue</SelectItem>
-                      <SelectItem value="quality_alert">Quality Alert</SelectItem>
-                      <SelectItem value="temperature_alert">Temperature Alert</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select value={severityFilter} onValueChange={setSeverityFilter}>
-                    <SelectTrigger className="w-[180px]">
-                      <AlertTriangle className="mr-2 h-4 w-4" />
-                      <SelectValue placeholder="Severity" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Severities</SelectItem>
-                      <SelectItem value="info">Info</SelectItem>
-                      <SelectItem value="warning">Warning</SelectItem>
-                      <SelectItem value="critical">Critical</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="flex gap-2 lg:w-auto w-full">
+                    <Select value={typeFilter} onValueChange={setTypeFilter}>
+                      <SelectTrigger className="h-10 w-[140px]">
+                        <SelectValue placeholder="Type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Types</SelectItem>
+                        <SelectItem value="stockout_warning">Stockout</SelectItem>
+                        <SelectItem value="delivery_delay">Delivery</SelectItem>
+                        <SelectItem value="supplier_issue">Supplier</SelectItem>
+                        <SelectItem value="temperature_alert">Temp</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={severityFilter} onValueChange={setSeverityFilter}>
+                      <SelectTrigger className="h-10 w-[140px]">
+                        <SelectValue placeholder="Severity" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="info">Info</SelectItem>
+                        <SelectItem value="warning">Warning</SelectItem>
+                        <SelectItem value="critical">Critical</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Alert List */}
             {isLoading ? (
-              <div className="space-y-4">
-                {[1, 2, 3].map((i) => (
-                  <Skeleton key={i} className="h-40" />
+              <div className="space-y-4 py-8">
+                {[1,2,3,4].map((i) => (
+                  <Skeleton key={i} className="h-32 rounded-lg" />
                 ))}
               </div>
-            ) : filteredAlerts && filteredAlerts.length > 0 ? (
-              <div className="space-y-4">
-              {filteredAlerts.map((alert: any) => (
-                <AlertCard
-                  key={alert.id}
-                  alert={alert}
-                  onMarkRead={() => markAsRead.mutate({ id: alert.id })}
-                  onResolve={() => handleResolve(alert)}
-                  readAlerts={readAlerts}
-                  resolvedAlerts={resolvedAlerts}
-                />
-              ))}
+            ) : filteredAlerts.length > 0 ? (
+              <div className="space-y-4 py-2">
+                {filteredAlerts.map((alert) => (
+                  <AlertCard
+                    key={alert.id}
+                    alert={alert}
+                    onMarkRead={() => markAlertRead(alert.id)}
+                    onResolve={() => handleResolve(alert)}
+                    readAlerts={readAlerts}
+                    resolvedAlerts={resolvedAlerts}
+                  />
+                ))}
               </div>
             ) : (
-              <Card>
-                <CardContent className="py-12 text-center">
-                  <Bell className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="font-semibold mb-2">No Alerts</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {activeTab === "unread"
-                      ? "All alerts have been read."
-                      : activeTab === "resolved"
-                        ? "No resolved alerts yet."
-                        : "No alerts match your filters."}
+              <Card className="mt-8">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                  <Bell className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                  <h3 className="text-lg font-semibold mb-2">No alerts match filters</h3>
+                  <p className="text-sm text-muted-foreground max-w-md">
+                    {activeTab === "resolved" ? "No resolved alerts" : "No matching alerts found"}
                   </p>
                 </CardContent>
               </Card>
@@ -501,43 +465,33 @@ const resolveAlert = trpc.alert.resolve.useMutation({
         </Tabs>
       </div>
 
-      {/* Resolve Dialog */}
       <Dialog open={showResolveDialog} onOpenChange={setShowResolveDialog}>
-        <DialogContent>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Resolve Alert</DialogTitle>
-            <DialogDescription>
-              Describe the action taken to resolve this alert.
-            </DialogDescription>
+            <DialogTitle>Mark as Resolved</DialogTitle>
+            <DialogDescription>Confirm resolution of this alert.</DialogDescription>
           </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="p-4 bg-muted rounded">
-              <p className="font-medium">{selectedAlert?.title}</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                {selectedAlert?.message}
-              </p>
+          <div className="space-y-4">
+            <div className="p-3 bg-muted/50 rounded-lg">
+              <p className="font-medium text-sm">{selectedAlert?.title}</p>
+              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{selectedAlert?.message}</p>
             </div>
-            <div>
-              <p className="text-caption mb-2">Action Taken</p>
-              <Textarea
-                placeholder="Describe the resolution action..."
-                value={actionTaken}
-                onChange={(e) => setActionTaken(e.target.value)}
-                rows={4}
-              />
-            </div>
+            <Textarea
+              placeholder="Optional: Action taken (for records)"
+              value={actionTaken}
+              onChange={(e) => setActionTaken(e.target.value)}
+              className="min-h-[80px]"
+            />
           </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowResolveDialog(false)}>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setShowResolveDialog(false)}>
               Cancel
             </Button>
-            <Button
+            <Button 
               onClick={submitResolve}
-              disabled={!actionTaken.trim() || resolveAlert.isPending}
+              className="flex-1"
             >
-              {resolveAlert.isPending ? "Resolving..." : "Resolve Alert"}
+              Mark Resolved
             </Button>
           </DialogFooter>
         </DialogContent>

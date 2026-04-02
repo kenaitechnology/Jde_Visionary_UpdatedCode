@@ -511,13 +511,30 @@ const alertRouter = router({
         filteredJDEAlerts = filteredJDEAlerts.filter((alert: any) => alert.isRead === input.isRead);
       }
       
-      // Filter by isResolved if specified
-      if (input?.isResolved !== undefined) {
-        filteredJDEAlerts = filteredJDEAlerts.filter((alert: any) => alert.isResolved === input.isResolved);
+      // Get resolved alerts from MSSQL for the current user
+      let resolvedAlertIds: number[] = [];
+      try {
+        // For now, we'll use a default user ID since we don't have authentication context here
+        // In a real implementation, you'd get this from the session
+        resolvedAlertIds = await jdeDb.getResolvedAlerts(1); // Default user ID
+      } catch (error) {
+        console.warn("Could not fetch resolved alerts from MSSQL:", error);
       }
-      
+
+      // Apply resolved status to JDE alerts
+      const jdeAlertsWithResolution = filteredJDEAlerts.map((alert: any) => ({
+        ...alert,
+        isResolved: resolvedAlertIds.includes(alert.id)
+      }));
+
+      // Filter by isResolved if specified (now that we have the resolved status)
+      let finalJDEAlerts = jdeAlertsWithResolution;
+      if (input?.isResolved !== undefined) {
+        finalJDEAlerts = finalJDEAlerts.filter((alert: any) => alert.isResolved === input.isResolved);
+      }
+
       // Sort all alerts by severity (critical first) then by a stable sort key
-      const sortedJDEAlerts = filteredJDEAlerts.sort((a: any, b: any) => {
+      const sortedJDEAlerts = finalJDEAlerts.sort((a: any, b: any) => {
         const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
         const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
         if (severityDiff !== 0) return severityDiff;
@@ -668,8 +685,18 @@ const alertRouter = router({
       actionTaken: z.string(),
     }))
     .mutation(async ({ input, ctx }) => {
-      // Always succeed - client manages resolved state via localStorage
-      return { success: true };
+      try {
+        // Ensure alert resolutions table exists
+        await jdeDb.createAlertResolutionsTable();
+
+        // Store resolution in MSSQL
+        await jdeDb.resolveAlert(input.id, ctx.user.id, input.actionTaken);
+
+        return { success: true };
+      } catch (error) {
+        console.error("Error resolving alert:", error);
+        throw new Error("Failed to resolve alert");
+      }
     }),
   
   create: protectedProcedure
