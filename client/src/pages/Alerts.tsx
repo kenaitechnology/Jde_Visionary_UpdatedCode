@@ -246,64 +246,45 @@ export default function Alerts() {
     effectiveIsResolved: getEffectiveIsResolved(alert, resolvedAlerts),
   })) || [];
 
-  const markAsRead = trpc.alert.markAsRead.useMutation({
+const markAsRead = trpc.alert.markAsRead.useMutation({
     onMutate: async ({ id }) => {
-      // Optimistic update for JDE alerts
+      // Optimistic update for ALL alerts (works everywhere)
       markAlertRead(id);
-      // Cancel ongoing queries
-      await utils.alert.list.cancel();
-      await utils.alert.getUnread.cancel();
-      // Snapshot previous data
-      const previousAlerts = utils.alert.list.getData();
-      const previousUnread = utils.alert.getUnread.getData();
-      return { previousAlerts, previousUnread };
+      toast.success("Marked as read");
+      // Don't invalidate - localStorage handles state
+      return { previousAlerts: utils.alert.list.getData(), previousUnread: utils.alert.getUnread.getData() };
     },
     onError: (err, { id }, context) => {
-      toast.error("Failed to mark as read");
-      if (context?.previousAlerts) {
-        utils.alert.list.setData(undefined, context.previousAlerts);
-      }
-      if (context?.previousUnread) {
-        utils.alert.getUnread.setData(undefined, context.previousUnread);
-      }
-      // Remove from local read state on error
+      toast.error(`Mark read failed: ${err.message}`);
+      // Rollback localStorage on error
       const newRead = new Set(readAlerts);
       newRead.delete(id);
       setReadAlerts(newRead);
       saveReadAlerts(newRead);
     },
-    onSuccess: (_, { id }) => {
-      toast.success("Alert marked as read");
+    onSettled: () => {
+      // Refetch only if needed, but local state primary
       utils.alert.list.invalidate();
-      utils.alert.getUnread.invalidate();
     },
   });
 
-  const resolveAlert = trpc.alert.resolve.useMutation({
+const resolveAlert = trpc.alert.resolve.useMutation({
     onMutate: async ({ id }) => {
-      // Optimistic for JDE alerts
+      // Optimistic local state update
       markAlertResolved(id);
-      await utils.alert.list.cancel();
-      await utils.alert.getUnread.cancel();
-      const previousAlerts = utils.alert.list.getData();
-      const previousUnread = utils.alert.getUnread.getData();
-      return { previousAlerts, previousUnread };
+      toast.success("Alert resolved locally");
+      return { previousAlerts: utils.alert.list.getData(), previousUnread: utils.alert.getUnread.getData() };
     },
     onError: (err, { id }, context) => {
-      toast.error("Failed to resolve alert");
-      if (context?.previousAlerts) utils.alert.list.setData(undefined, context.previousAlerts);
-      if (context?.previousUnread) utils.alert.getUnread.setData(undefined, context.previousUnread);
+      toast.error(`Resolve failed: ${err.message}. Kept local state.`);
       const newResolved = new Set(resolvedAlerts);
       newResolved.delete(id);
       setResolvedAlerts(newResolved);
       saveResolvedAlerts(newResolved);
     },
-    onSuccess: () => {
-      toast.success("Alert resolved");
-      setShowResolveDialog(false);
-      setActionTaken("");
+    onSettled: () => {
+      // Graceful refetch
       utils.alert.list.invalidate();
-      utils.alert.getUnread.invalidate();
     },
   });
 
