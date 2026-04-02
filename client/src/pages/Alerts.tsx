@@ -316,6 +316,9 @@ const resolveAlert = trpc.alert.resolve.useMutation({
   });
 
   const unreadCount = alerts.filter((a: any) => !a.effectiveIsRead && !a.effectiveIsResolved).length;
+  useEffect(() => {
+    utils.alert.list.refetch();
+  }, [readAlerts, resolvedAlerts]);
   const criticalCount = alerts?.filter((a: any) => a.severity === "critical" && !a.isResolved).length || 0;
 
   const handleResolve = (alert: any) => {
