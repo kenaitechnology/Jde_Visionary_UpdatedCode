@@ -152,12 +152,26 @@ function DashboardLayoutContent({
   const activeMenuItem = menuItems.find((item) => item.path === location);
   const isMobile = useIsMobile();
 
-  // Fetch unread alerts count
-  const { data: unreadAlerts } = trpc.alert.getUnread.useQuery(undefined, {
+  // Fetch unread alerts data for client-side processing
+  const { data: unreadAlertsData } = trpc.alert.getUnread.useQuery(undefined, {
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
-  const unreadCount = unreadAlerts?.length ?? 0;
+  const unreadAlerts = unreadAlertsData || [];
+  const unreadCount = unreadAlerts.filter((alert: any) => {
+    if (alert.id >= 0) return !alert.isRead && !alert.isResolved; // Local alerts
+    // JDE alerts: check local read & resolved state
+    try {
+      const readStored = localStorage.getItem("jde-visionary-alerts-read");
+      const resolvedStored = localStorage.getItem("jde-visionary-alerts-resolved");
+      const readIds = readStored ? new Set(JSON.parse(readStored)) : new Set();
+      const resolvedIds = resolvedStored ? new Set(JSON.parse(resolvedStored)) : new Set();
+      return !readIds.has(alert.id) && !resolvedIds.has(alert.id);
+    } catch {
+      // Fallback to unread
+    }
+    return true;
+  }).length;
 
   useEffect(() => {
     if (isCollapsed) {

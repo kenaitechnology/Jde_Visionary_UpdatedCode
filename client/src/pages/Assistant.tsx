@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { trpc } from "@/lib/trpc";
 import {
   AlertTriangle,
   Bot,
@@ -25,20 +24,16 @@ type Message = {
 
 const suggestedQuestions = [
   {
-    icon: AlertTriangle,
-    text: "What are the most critical alerts I should address today?",
-  },
-  {
     icon: Package,
     text: "Which items are at risk of stockout in the next 14 days?",
   },
   {
     icon: Truck,
-    text: "Show me delayed purchase orders with high delay probability",
+    text: "Show sales orders where quantity greater than 3?",
   },
   {
     icon: Box,
-    text: "What is the status of my high-priority orders?",
+    text: "What is the status of my high priority orders?",
   },
 ];
 
@@ -76,51 +71,122 @@ function MessageBubble({ message }: { message: Message }) {
 export default function Assistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const formatDataForDisplay = (data: any): string => {
+    // Priority 1: If data.data is an array, format as markdown table
+    if (data?.data && Array.isArray(data.data)) {
+      return formatArrayAsTable(data.data);
+    }
+    // Priority 2: Use response field
+    if (data?.response) {
+      return data.response;
+    }
+    // Fallback: JSON stringify
+    return JSON.stringify(data, null, 2);
+  };
+
+  const formatArrayAsTable = (arr: any[]): string => {
+    if (arr.length === 0) return "No data available.";
+    
+    const firstItem = arr[0];
+    if (typeof firstItem !== 'object' || firstItem === null) {
+      return arr.join('\n');
+    }
+
+    // Get all unique keys from first few items (limit to 5)
+    const keys = new Set<string>();
+    for (let i = 0; i < Math.min(5, arr.length); i++) {
+      Object.keys(arr[i]).forEach(key => keys.add(key));
+    }
+    const headers = Array.from(keys).slice(0, 20); // Limit columns
+
+    // Build markdown table
+    let table = `| ${headers.join(' | ')} |\n`;
+    table += `| ${headers.map(() => '---').join(' | ')} |\n`;
+
+    // Add rows (limit to 20 rows for readability)
+    for (let i = 0; i < Math.min(100, arr.length); i++) {
+      const row = headers.map(key => {
+        const val = arr[i][key];
+        if (val === null || val === undefined) return '';
+        if (typeof val === 'number') return val.toString();
+        if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+        return String(val).substring(0, 30) + (String(val).length > 100 ? '...' : '');
+      });
+      table += `| ${row.join(' | ')} |\n`;
+    }
+
+    if (arr.length > 100) {
+      table += `\n*Showing first 20 of ${arr.length} rows*`;
+    }
+ 
+    return table;
+  };
+
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  const chatMutation = trpc.ai.chat.useMutation({
-    onSuccess: (data) => {
-      const responseContent = typeof data.response === 'string' ? data.response : JSON.stringify(data.response);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: responseContent },
-      ]);
-    },
-    onError: () => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "I apologize, but I encountered an error processing your request. Please try again.",
-        },
-      ]);
-    },
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
+
+
+
+  // Scroll to bottom when new messages added (preserve if user scrolled up)
+  const wasAtBottomRef = useRef(true);
+  useEffect(() => {
+    if (scrollViewportRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollViewportRef.current;
+      wasAtBottomRef.current = scrollTop + clientHeight >= scrollHeight - 10;
+    }
   });
 
   useEffect(() => {
-    // Scroll to bottom when messages change
-    if (scrollAreaRef.current) {
-      const scrollContainer = scrollAreaRef.current.querySelector(
-        "[data-radix-scroll-area-viewport]"
-      );
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
+    if (wasAtBottomRef.current && scrollViewportRef.current) {
+      const scrollToBottomSmooth = () => {
+        scrollViewportRef.current!.scrollTop = scrollViewportRef.current!.scrollHeight;
+      };
+      requestAnimationFrame(scrollToBottomSmooth);
     }
-  }, [messages]);
+  }, [messages.length]);
 
-  const handleSend = () => {
-    if (!input.trim() || chatMutation.isPending) return;
+
+
+  const handleSend = async () => {
+    if (!input.trim()) return;
 
     const userMessage = input.trim();
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     setInput("");
 
-    chatMutation.mutate({
-      message: userMessage,
-      conversationHistory: messages,
-    });
+    try {
+      const response = await fetch('https://jde-visionary-ai-backend.onrender.com/api/ask', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ question: userMessage }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch response');
+      }
+
+      const data = await response.json();
+      console.log('API Response:', data);
+
+      setMessages((prev) => [
+        ...prev,
+{ role: "assistant", content: formatDataForDisplay(data) },
+      ]);
+    } catch (error) {
+      console.error('Error:', error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "I apologize, but I encountered an error processing your request. Please try again.",
+        },
+      ]);
+    }
   };
 
   const handleSuggestedQuestion = (question: string) => {
@@ -150,9 +216,9 @@ export default function Assistant() {
             </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 p-0 flex flex-col">
-            <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
+            <ScrollArea className="flex-1 p-4 h-[60vh] min-h-[400px]" ref={scrollAreaRef}>
               {messages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center py-12">
+                <div className="flex flex-col items-center justify-center py-12 min-h-[400px]">
                   <div className="w-16 h-16 bg-primary/10 flex items-center justify-center mb-6">
                     <Bot className="h-8 w-8 text-primary" />
                   </div>
@@ -178,11 +244,11 @@ export default function Assistant() {
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-4 pt-4">
                   {messages.map((message, i) => (
                     <MessageBubble key={i} message={message} />
                   ))}
-                  {chatMutation.isPending && (
+                  {isLoading && (
                     <div className="flex gap-3">
                       <div className="w-8 h-8 shrink-0 flex items-center justify-center bg-muted">
                         <Bot className="h-4 w-4" />
@@ -210,13 +276,13 @@ export default function Assistant() {
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="Ask about your supply chain..."
                   className="flex-1"
-                  disabled={chatMutation.isPending}
+                  disabled={isLoading}
                 />
                 <Button
                   type="submit"
-                  disabled={!input.trim() || chatMutation.isPending}
+                  disabled={!input.trim() || isLoading}
                 >
-                  {chatMutation.isPending ? (
+                  {isLoading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     <Send className="h-4 w-4" />

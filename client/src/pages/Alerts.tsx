@@ -1,4 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
+
+import { useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +43,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import type { Alert } from "@/../../drizzle/schema";
 
 function SeverityBadge({ severity }: { severity: string }) {
   const config: Record<string, { variant: "default" | "secondary" | "outline" | "destructive"; label: string }> = {
@@ -69,12 +72,31 @@ function AlertTypeIcon({ type }: { type: string }) {
   return <Icon className="h-5 w-5" />;
 }
 
-function AlertCard({ alert, onMarkRead, onResolve }: { alert: any; onMarkRead: () => void; onResolve: () => void }) {
+// Helper functions moved here to be available for AlertCard
+const isJDEAlert = (alert: any): boolean => alert.id < 0;
+
+const getEffectiveIsRead = (alert: any, readAlerts: Set<number>): boolean => {
+  if (!isJDEAlert(alert)) {
+    return !!alert.isRead;
+  }
+  return readAlerts.has(alert.id);
+};
+
+const getEffectiveIsResolved = (alert: any, resolvedAlerts: Set<number>): boolean => {
+  if (!isJDEAlert(alert)) {
+    return !!alert.isResolved;
+  }
+  return resolvedAlerts.has(alert.id);
+};
+
+function AlertCard({ alert, onMarkRead, onResolve, readAlerts, resolvedAlerts }: { alert: any; onMarkRead: () => void; onResolve: () => void; readAlerts: Set<number>; resolvedAlerts: Set<number> }) {
   const severityColors: Record<string, string> = {
     info: "border-l-[oklch(0.60_0.15_250)]",
     warning: "border-l-[oklch(0.80_0.18_85)]",
     critical: "border-l-[oklch(0.55_0.25_27)]",
   };
+
+  const effectiveIsRead = alert.effectiveIsRead ?? getEffectiveIsRead(alert, readAlerts); // Fallback
 
   return (
     <Card className={`border-l-4 ${severityColors[alert.severity] || "border-l-border"}`}>
@@ -109,7 +131,7 @@ function AlertCard({ alert, onMarkRead, onResolve }: { alert: any; onMarkRead: (
             </div>
             <p className="text-sm text-muted-foreground mb-4">{alert.message}</p>
             <div className="flex items-center gap-2">
-              {!alert.isRead && (
+              {!effectiveIsRead && (
                 <Button variant="outline" size="sm" onClick={onMarkRead}>
                   <Check className="mr-2 h-4 w-4" />
                   Mark as Read
@@ -131,6 +153,8 @@ function AlertCard({ alert, onMarkRead, onResolve }: { alert: any; onMarkRead: (
 
 export default function Alerts() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [readAlerts, setReadAlerts] = useState<Set<number>>(new Set());
+  const [resolvedAlerts, setResolvedAlerts] = useState<Set<number>>(new Set());
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState("unread");
@@ -140,15 +164,115 @@ export default function Alerts() {
 
   const utils = trpc.useUtils();
 
-  const { data: alerts, isLoading, refetch } = trpc.alert.list.useQuery({
+  // Client-side read state for ephemeral JDE alerts
+  const READ_ALERTS_KEY = "jde-visionary-alerts-read";
+  const RESOLVED_ALERTS_KEY = "jde-visionary-alerts-resolved";
+
+  const getReadAlerts = (): Set<number> => {
+    try {
+      const stored = localStorage.getItem(READ_ALERTS_KEY);
+      if (stored) {
+        return new Set(JSON.parse(stored));
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return new Set();
+  };
+
+  const getResolvedAlerts = (): Set<number> => {
+    try {
+      const stored = localStorage.getItem(RESOLVED_ALERTS_KEY);
+      if (stored) {
+        return new Set(JSON.parse(stored));
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return new Set();
+  };
+
+  const saveReadAlerts = (alerts: Set<number>) => {
+    try {
+      localStorage.setItem(READ_ALERTS_KEY, JSON.stringify(Array.from(alerts)));
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const saveResolvedAlerts = (alerts: Set<number>) => {
+    try {
+      localStorage.setItem(RESOLVED_ALERTS_KEY, JSON.stringify(Array.from(alerts)));
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const markAlertRead = (id: number) => {
+    const newRead = new Set(readAlerts);
+    newRead.add(id);
+    setReadAlerts(newRead);
+    saveReadAlerts(newRead);
+  };
+
+  const markAlertResolved = (id: number) => {
+    const newResolved = new Set(resolvedAlerts);
+    newResolved.add(id);
+    setResolvedAlerts(newResolved);
+    saveResolvedAlerts(newResolved);
+  };
+
+  useEffect(() => {
+    const loadedRead = getReadAlerts();
+    const loadedResolved = getResolvedAlerts();
+    setReadAlerts(loadedRead);
+    setResolvedAlerts(loadedResolved);
+  }, []); 
+
+  useEffect(() => {
+    saveReadAlerts(readAlerts);
+  }, [readAlerts]);
+
+  const { data: rawAlerts, isLoading, refetch } = trpc.alert.list.useQuery({
     type: typeFilter !== "all" ? typeFilter : undefined,
     severity: severityFilter !== "all" ? severityFilter : undefined,
     isRead: activeTab === "unread" ? false : undefined,
     isResolved: activeTab === "resolved" ? true : activeTab === "unread" ? false : undefined,
   });
 
+  const alerts = rawAlerts?.map((alert: any) => ({
+    ...alert,
+    effectiveIsRead: getEffectiveIsRead(alert, readAlerts),
+    effectiveIsResolved: getEffectiveIsResolved(alert, resolvedAlerts),
+  })) || [];
+
   const markAsRead = trpc.alert.markAsRead.useMutation({
-    onSuccess: () => {
+    onMutate: async ({ id }) => {
+      // Optimistic update for JDE alerts
+      markAlertRead(id);
+      // Cancel ongoing queries
+      await utils.alert.list.cancel();
+      await utils.alert.getUnread.cancel();
+      // Snapshot previous data
+      const previousAlerts = utils.alert.list.getData();
+      const previousUnread = utils.alert.getUnread.getData();
+      return { previousAlerts, previousUnread };
+    },
+    onError: (err, { id }, context) => {
+      toast.error("Failed to mark as read");
+      if (context?.previousAlerts) {
+        utils.alert.list.setData(undefined, context.previousAlerts);
+      }
+      if (context?.previousUnread) {
+        utils.alert.getUnread.setData(undefined, context.previousUnread);
+      }
+      // Remove from local read state on error
+      const newRead = new Set(readAlerts);
+      newRead.delete(id);
+      setReadAlerts(newRead);
+      saveReadAlerts(newRead);
+    },
+    onSuccess: (_, { id }) => {
       toast.success("Alert marked as read");
       utils.alert.list.invalidate();
       utils.alert.getUnread.invalidate();
@@ -156,6 +280,24 @@ export default function Alerts() {
   });
 
   const resolveAlert = trpc.alert.resolve.useMutation({
+    onMutate: async ({ id }) => {
+      // Optimistic for JDE alerts
+      markAlertResolved(id);
+      await utils.alert.list.cancel();
+      await utils.alert.getUnread.cancel();
+      const previousAlerts = utils.alert.list.getData();
+      const previousUnread = utils.alert.getUnread.getData();
+      return { previousAlerts, previousUnread };
+    },
+    onError: (err, { id }, context) => {
+      toast.error("Failed to resolve alert");
+      if (context?.previousAlerts) utils.alert.list.setData(undefined, context.previousAlerts);
+      if (context?.previousUnread) utils.alert.getUnread.setData(undefined, context.previousUnread);
+      const newResolved = new Set(resolvedAlerts);
+      newResolved.delete(id);
+      setResolvedAlerts(newResolved);
+      saveResolvedAlerts(newResolved);
+    },
     onSuccess: () => {
       toast.success("Alert resolved");
       setShowResolveDialog(false);
@@ -166,6 +308,10 @@ export default function Alerts() {
   });
 
   const filteredAlerts = alerts?.filter((alert: any) => {
+    // Filter unread: not read AND not resolved
+    if (activeTab === "unread" && (alert.effectiveIsRead || alert.effectiveIsResolved)) return false;
+    // Filter resolved: resolved
+    if (activeTab === "resolved" && !alert.effectiveIsResolved) return false;
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
@@ -188,7 +334,7 @@ export default function Alerts() {
     return a.id - b.id;
   });
 
-  const unreadCount = alerts?.filter((a: any) => !a.isRead).length || 0;
+  const unreadCount = alerts.filter((a: any) => !a.effectiveIsRead && !a.effectiveIsResolved).length;
   const criticalCount = alerts?.filter((a: any) => a.severity === "critical" && !a.isResolved).length || 0;
 
   const handleResolve = (alert: any) => {
@@ -231,7 +377,7 @@ export default function Alerts() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-caption">Total Alerts</p>
-                  <p className="text-3xl font-bold">{alerts?.length || 0}</p>
+          <p className="text-3xl font-bold">{rawAlerts?.length || 0}</p>
                 </div>
                 <Bell className="h-8 w-8 text-muted-foreground" />
               </div>
@@ -243,7 +389,7 @@ export default function Alerts() {
                 <div>
                   <p className="text-caption">Unread</p>
                   <p className="text-3xl font-bold text-[oklch(0.55_0.25_27)]">
-                    {unreadCount}
+                    {alerts.filter((a: any) => !a.effectiveIsRead && !a.effectiveIsResolved).length}
                   </p>
                 </div>
                 <BellOff className="h-8 w-8 text-[oklch(0.55_0.25_27)]" />
@@ -256,7 +402,7 @@ export default function Alerts() {
                 <div>
                   <p className="text-caption">Critical</p>
                   <p className="text-3xl font-bold text-[oklch(0.55_0.25_27)]">
-                    {criticalCount}
+                    {alerts.filter((a: any) => a.severity === "critical" && !a.effectiveIsResolved).length}
                   </p>
                 </div>
                 <XCircle className="h-8 w-8 text-[oklch(0.55_0.25_27)]" />
@@ -269,7 +415,7 @@ export default function Alerts() {
                 <div>
                   <p className="text-caption">Resolved Today</p>
                   <p className="text-3xl font-bold text-[oklch(0.65_0.2_145)]">
-                    {alerts?.filter((a: any) => a.isResolved).length || 0}
+                    {alerts.filter((a: any) => a.effectiveIsResolved).length}
                   </p>
                 </div>
                 <CheckCircle2 className="h-8 w-8 text-[oklch(0.65_0.2_145)]" />
@@ -282,12 +428,7 @@ export default function Alerts() {
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="unread" className="flex items-center gap-2">
-              Unread
-              {unreadCount > 0 && (
-                <Badge variant="destructive" className="h-5 min-w-5 px-1.5">
-                  {unreadCount}
-                </Badge>
-              )}
+              Unread ({unreadCount})
             </TabsTrigger>
             <TabsTrigger value="all">All Alerts</TabsTrigger>
             <TabsTrigger value="resolved">Resolved</TabsTrigger>
@@ -346,14 +487,16 @@ export default function Alerts() {
               </div>
             ) : filteredAlerts && filteredAlerts.length > 0 ? (
               <div className="space-y-4">
-                {filteredAlerts.map((alert: any) => (
-                  <AlertCard
-                    key={alert.id}
-                    alert={alert}
-                    onMarkRead={() => markAsRead.mutate({ id: alert.id })}
-                    onResolve={() => handleResolve(alert)}
-                  />
-                ))}
+              {filteredAlerts.map((alert: any) => (
+                <AlertCard
+                  key={alert.id}
+                  alert={alert}
+                  onMarkRead={() => markAsRead.mutate({ id: alert.id })}
+                  onResolve={() => handleResolve(alert)}
+                  readAlerts={readAlerts}
+                  resolvedAlerts={resolvedAlerts}
+                />
+              ))}
               </div>
             ) : (
               <Card>

@@ -15,7 +15,7 @@ function getJDEConfig(): JDEEnv {
     MSSQL_PORT: ENV.mssqlPort || 1433,
     MSSQL_USER: ENV.mssqlUser || "",
     MSSQL_PASSWORD: ENV.mssqlPassword || "",
-    MSSQL_DATABASE: ENV.mssqlDatabase || "CRPDTA",
+    MSSQL_DATABASE: ENV.mssqlDatabase || "JDE_AI",
   };
 }
 
@@ -222,7 +222,7 @@ function convertJEDate(julianDate: string | number | null | undefined): string {
 /**
  * Execute a query using the singleton connection pool
  */
-async function executeQuery<T>(query: string): Promise<T[]> {
+export async function executeQuery<T>(query: string): Promise<T[]> {
   try {
     const pool = await getPool();
     if (!pool) {

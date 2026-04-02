@@ -198,7 +198,7 @@ function getJDEConfig() {
     MSSQL_PORT: parseInt(process.env.JDE_MSSQL_PORT || '1433'),
     MSSQL_USER: process.env.JDE_MSSQL_USER || "",
     MSSQL_PASSWORD: process.env.JDE_MSSQL_PASSWORD || "",
-    MSSQL_DATABASE: process.env.JDE_MSSQL_DATABASE || "CRPDTA",
+    MSSQL_DATABASE: process.env.JDE_MSSQL_DATABASE || "JDE_AI",
   };
 }
 
@@ -464,13 +464,24 @@ function calculateJDEPORisk(status, deliveryDate) {
   return { riskLevel: "yellow", delayProbability: 35 };
 }
 
+async function getJDEInventoryItemByCode(itemCode) {
+  try {
+    const items = await getJDEInventoryItems();
+    return items.find(item => item.itemCode === itemCode) || null;
+  } catch (err) {
+    console.error('JDE Inventory item by code error:', err);
+    return null;
+  }
+}
+
 // Export individual functions
 module.exports = {
   getJDESuppliers,
   getJDEInventoryItems,
-  getJDEPurchaseOrders,
+  getJDEPurchaseOrderById,
   getJDESalesOrders,
   getJDEShipments,
-  getJDEPurchaseOrderById
+  getJDEInventoryItemByCode
 };
+
 

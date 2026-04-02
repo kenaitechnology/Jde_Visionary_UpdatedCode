@@ -65,7 +65,13 @@ const inventoryRouter = router({
   getStockoutRisks: publicProcedure
     .input(z.object({ daysThreshold: z.number().optional().default(14) }))
     .query(async ({ input }) => {
-      return db.getStockoutRiskItems(input.daysThreshold);
+      const allJDEItems = await jdeDb.getJDEInventoryItems();
+      const risks = allJDEItems.filter(item => 
+        (item.daysOfSupply <= input.daysThreshold) || 
+        item.stockoutRisk === 'high' || 
+        item.stockoutRisk === 'critical'
+      ).sort((a, b) => (a.daysOfSupply || 999) - (b.daysOfSupply || 999));
+      return risks;
     }),
   
   update: protectedProcedure

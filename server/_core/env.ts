@@ -13,5 +13,5 @@ export const ENV = {
   mssqlPort: parseInt(process.env.MSSQL_PORT ?? "1433"),
   mssqlUser: process.env.MSSQL_USER ?? "",
   mssqlPassword: process.env.MSSQL_PASSWORD ?? "",
-  mssqlDatabase: process.env.MSSQL_DATABASE ?? "CRPDTA",
+  mssqlDatabase: process.env.MSSQL_DATABASE ?? "JDE_AI", // Default to JDE_AI, can be overridden by env
 };
